@@ -1,289 +1,307 @@
 """
-Model evaluation module
+Model evaluation module - Enhanced version with advanced metrics
 """
 import pandas as pd
 import numpy as np
 import os
 import sys
-from sklearn.metrics import (mean_squared_error, mean_absolute_error, 
-                             r2_score, mean_absolute_percentage_error)
+from typing import Dict, Any, Optional, List
+from datetime import datetime
+import warnings
+warnings.filterwarnings('ignore')
+
+from sklearn.metrics import (
+    mean_squared_error, 
+    mean_absolute_error, 
+    r2_score, 
+    mean_absolute_percentage_error,
+    explained_variance_score,
+    max_error,
+    median_absolute_error
+)
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.config import DATA_PROCESSED_DIR, MODELS_DIR, STOCK_SYMBOL, OUTPUTS_DIR
-from utils.helpers import load_model, save_metrics, print_section
-from src.train_model import prepare_features_target, split_data
+from utils.helpers import load_model, print_section, Timer
 
 
-def calculate_metrics(y_true, y_pred):
+class AdvancedEvaluator:
     """
-    Calculate regression metrics
+    Advanced model evaluation with comprehensive metrics and visualizations
+    """
     
-    Args:
-        y_true: True values
-        y_pred: Predicted values
+    def __init__(self, y_true, y_pred, model_name='Model'):
+        self.y_true = y_true
+        self.y_pred = y_pred
+        self.model_name = model_name
+        self.metrics = {}
         
-    Returns:
-        Dictionary of metrics
-    """
-    metrics = {
-        'MAE': mean_absolute_error(y_true, y_pred),
-        'MSE': mean_squared_error(y_true, y_pred),
-        'RMSE': np.sqrt(mean_squared_error(y_true, y_pred)),
-        'R2': r2_score(y_true, y_pred),
-        'MAPE': mean_absolute_percentage_error(y_true, y_pred) * 100
-    }
-    
-    return metrics
-
-
-def evaluate_model(model, X_train, y_train, X_test, y_test, model_name='Model'):
-    """
-    Evaluate a single model on train and test sets
-    
-    Args:
-        model: Trained model
-        X_train: Training features
-        y_train: Training target
-        X_test: Test features
-        y_test: Test target
-        model_name: Name of the model
-        
-    Returns:
-        Dictionary with train and test metrics
-    """
-    print_section(f"Evaluating {model_name}")
-    
-    # Predictions
-    y_train_pred = model.predict(X_train)
-    y_test_pred = model.predict(X_test)
-    
-    # Calculate metrics
-    train_metrics = calculate_metrics(y_train, y_train_pred)
-    test_metrics = calculate_metrics(y_test, y_test_pred)
-    
-    # Display results
-    print("\n📊 Training Metrics:")
-    for metric, value in train_metrics.items():
-        print(f"  {metric:8s}: {value:12.4f}")
-    
-    print("\n📊 Test Metrics:")
-    for metric, value in test_metrics.items():
-        print(f"  {metric:8s}: {value:12.4f}")
-    
-    # Calculate overfitting indicator
-    r2_diff = train_metrics['R2'] - test_metrics['R2']
-    if r2_diff > 0.1:
-        print(f"\n⚠️  Warning: Possible overfitting (R² difference: {r2_diff:.4f})")
-    
-    results = {
-        'model_name': model_name,
-        'train_metrics': train_metrics,
-        'test_metrics': test_metrics,
-        'predictions': {
-            'train': y_train_pred.tolist(),
-            'test': y_test_pred.tolist()
+    def calculate_basic_metrics(self) -> Dict:
+        """Calculate basic regression metrics"""
+        metrics = {
+            'MSE': mean_squared_error(self.y_true, self.y_pred),
+            'RMSE': np.sqrt(mean_squared_error(self.y_true, self.y_pred)),
+            'MAE': mean_absolute_error(self.y_true, self.y_pred),
+            'MAPE': mean_absolute_percentage_error(self.y_true, self.y_pred) * 100,
+            'R2': r2_score(self.y_true, self.y_pred),
+            'Explained_Variance': explained_variance_score(self.y_true, self.y_pred),
+            'Max_Error': max_error(self.y_true, self.y_pred),
+            'Median_AE': median_absolute_error(self.y_true, self.y_pred)
         }
-    }
-    
-    return results
-
-
-def evaluate_all_models(models_dict, X_train, y_train, X_test, y_test, save=True):
-    """
-    Evaluate all models
-    
-    Args:
-        models_dict: Dictionary of trained models
-        X_train: Training features
-        y_train: Training target
-        X_test: Test features
-        y_test: Test target
-        save: Whether to save evaluation results
         
-    Returns:
-        Dictionary with all evaluation results
-    """
-    print_section("Evaluating All Models")
+        return metrics
     
-    all_results = {}
-    
-    for model_name, model in models_dict.items():
-        results = evaluate_model(
-            model, X_train, y_train, X_test, y_test, 
-            model_name=model_name.replace('_', ' ').title()
-        )
-        all_results[model_name] = results
+    def calculate_percentage_metrics(self) -> Dict:
+        """Calculate percentage-based metrics"""
+        errors = self.y_true - self.y_pred
+        rel_errors = errors / self.y_true
         
-        # Save individual model metrics
-        if save:
-            save_metrics(results, f"{model_name}_metrics", OUTPUTS_DIR)
+        metrics = {
+            'MAPE': np.mean(np.abs(rel_errors)) * 100,
+            'SMAPE': np.mean(2 * np.abs(self.y_true - self.y_pred) / (np.abs(self.y_true) + np.abs(self.y_pred))) * 100,
+            'MASE': np.mean(np.abs(errors)) / np.mean(np.abs(np.diff(self.y_true))),
+            'RMSPE': np.sqrt(np.mean((errors / self.y_true) ** 2)) * 100
+        }
+        
+        return metrics
     
-    # Create comparison DataFrame
-    comparison = create_comparison_table(all_results)
-    print_section("Model Comparison")
-    print("\n", comparison.to_string(index=False))
+    def calculate_directional_metrics(self) -> Dict:
+        """Calculate directional accuracy metrics"""
+        # Direction predictions
+        actual_direction = np.diff(self.y_true) > 0
+        pred_direction = np.diff(self.y_pred) > 0
+        
+        # Directional accuracy
+        dir_acc = np.mean(actual_direction == pred_direction) * 100
+        
+        # Win rate
+        actual_returns = np.diff(self.y_true) / self.y_true[:-1]
+        pred_returns = np.diff(self.y_pred) / self.y_pred[:-1]
+        
+        # Buy/Sell signals
+        positions = np.where(pred_returns > 0, 1, 0)
+        strategy_returns = positions * actual_returns
+        
+        # Metrics
+        win_rate = np.mean(strategy_returns > 0) * 100
+        total_return = np.sum(strategy_returns) * 100
+        
+        metrics = {
+            'Directional_Accuracy': dir_acc,
+            'Win_Rate': win_rate,
+            'Total_Return': total_return,
+            'Avg_Gain': np.mean(strategy_returns[strategy_returns > 0]) * 100 if any(strategy_returns > 0) else 0,
+            'Avg_Loss': np.mean(strategy_returns[strategy_returns < 0]) * 100 if any(strategy_returns < 0) else 0,
+            'Profit_Factor': np.sum(strategy_returns[strategy_returns > 0]) / abs(np.sum(strategy_returns[strategy_returns < 0])) if any(strategy_returns < 0) else np.inf
+        }
+        
+        return metrics
     
-    # Save comparison
-    if save:
-        filepath = os.path.join(OUTPUTS_DIR, 'model_comparison.csv')
-        comparison.to_csv(filepath, index=False)
-        print(f"\n✅ Model comparison saved to: {filepath}")
+    def calculate_risk_metrics(self) -> Dict:
+        """Calculate risk-related metrics"""
+        errors = self.y_true - self.y_pred
+        
+        # Errors
+        metrics = {
+            'Bias': np.mean(errors),
+            'MBD': np.mean(errors) / np.mean(self.y_true) * 100,  # Mean bias deviation
+            'MAD': np.mean(np.abs(errors - np.mean(errors)))  # Mean absolute deviation
+        }
+        
+        # Residual analysis
+        metrics.update({
+            'Residual_Std': np.std(errors),
+            'Residual_Skew': pd.Series(errors).skew(),
+            'Residual_Kurtosis': pd.Series(errors).kurtosis()
+        })
+        
+        # Prediction interval coverage (95% CI)
+        std_error = np.std(errors)
+        lower_bound = self.y_pred - 1.96 * std_error
+        upper_bound = self.y_pred + 1.96 * std_error
+        metrics['Coverage_95'] = np.mean((self.y_true >= lower_bound) & (self.y_true <= upper_bound)) * 100
+        
+        # Theil's U statistic
+        y_true_log = np.log(self.y_true)
+        y_pred_log = np.log(self.y_pred)
+        y_true_diff = np.diff(y_true_log)
+        y_pred_diff = np.diff(y_pred_log)
+        
+        numerator = np.sqrt(np.mean((y_true_diff - y_pred_diff) ** 2))
+        denominator = np.sqrt(np.mean(y_true_diff ** 2))
+        metrics['Theil_U'] = numerator / denominator if denominator != 0 else 0
+        
+        return metrics
     
-    return all_results
+    def calculate_all_metrics(self) -> Dict:
+        """Calculate all metrics"""
+        print_section(f"Evaluating {self.model_name}")
+        
+        with Timer(f"{self.model_name} Evaluation"):
+            # Basic metrics
+            basic_metrics = self.calculate_basic_metrics()
+            
+            # Percentage metrics
+            percentage_metrics = self.calculate_percentage_metrics()
+            
+            # Directional metrics
+            directional_metrics = self.calculate_directional_metrics()
+            
+            # Risk metrics
+            risk_metrics = self.calculate_risk_metrics()
+            
+            # Combine all metrics
+            self.metrics = {
+                **basic_metrics,
+                **percentage_metrics,
+                **directional_metrics,
+                **risk_metrics
+            }
+        
+        return self.metrics
+    
+    def print_metrics(self):
+        """Print metrics in a formatted way"""
+        if not self.metrics:
+            self.calculate_all_metrics()
+        
+        print("\n" + "="*70)
+        print(f"  {self.model_name} - PERFORMANCE METRICS")
+        print("="*70)
+        
+        # Basic metrics
+        print("\n📊 Basic Metrics:")
+        for key in ['R2', 'RMSE', 'MAE', 'MAPE', 'MSE', 'Explained_Variance']:
+            if key in self.metrics:
+                print(f"  {key:20s}: {self.metrics[key]:.4f}")
+        
+        # Directional metrics
+        print("\n🎯 Directional Metrics:")
+        for key in ['Directional_Accuracy', 'Win_Rate', 'Total_Return', 'Profit_Factor']:
+            if key in self.metrics:
+                print(f"  {key:20s}: {self.metrics[key]:.2f}%")
+        
+        # Risk metrics
+        print("\n⚠️  Risk Metrics:")
+        for key in ['Bias', 'MBD', 'Residual_Std', 'Coverage_95', 'Theil_U']:
+            if key in self.metrics:
+                print(f"  {key:20s}: {self.metrics[key]:.4f}")
+    
+    def save_metrics(self, output_dir: str):
+        """Save metrics to file"""
+        if not self.metrics:
+            self.calculate_all_metrics()
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{self.model_name}_metrics_{timestamp}"
+        filepath = os.path.join(output_dir, filename)
+        
+        # Convert numpy types to Python types
+        metrics_clean = {}
+        for key, value in self.metrics.items():
+            if isinstance(value, (np.integer, np.floating)):
+                metrics_clean[key] = float(value)
+            else:
+                metrics_clean[key] = value
+        
+        # Save as JSON
+        import json
+        with open(f"{filepath}.json", 'w') as f:
+            json.dump(metrics_clean, f, indent=4)
+        
+        print(f"✅ Metrics saved: {filepath}.json")
+        
+        return filepath
 
 
-def create_comparison_table(results_dict):
-    """
-    Create a comparison table for all models
+def compare_models(y_true, y_pred_dict: Dict[str, np.ndarray]) -> pd.DataFrame:
+    """Compare multiple models"""
+    comparison = []
     
-    Args:
-        results_dict: Dictionary with evaluation results
+    for name, y_pred in y_pred_dict.items():
+        evaluator = AdvancedEvaluator(y_true, y_pred, name)
+        metrics = evaluator.calculate_all_metrics()
         
-    Returns:
-        DataFrame with comparison
-    """
-    comparison_data = []
-    
-    for model_name, results in results_dict.items():
         row = {
-            'Model': results['model_name'],
-            'Train_R2': results['train_metrics']['R2'],
-            'Test_R2': results['test_metrics']['R2'],
-            'Train_RMSE': results['train_metrics']['RMSE'],
-            'Test_RMSE': results['test_metrics']['RMSE'],
-            'Train_MAE': results['train_metrics']['MAE'],
-            'Test_MAE': results['test_metrics']['MAE'],
-            'Test_MAPE': results['test_metrics']['MAPE']
+            'Model': name,
+            'R2': metrics.get('R2', np.nan),
+            'RMSE': metrics.get('RMSE', np.nan),
+            'MAE': metrics.get('MAE', np.nan),
+            'MAPE': metrics.get('MAPE', np.nan),
+            'Dir_Acc': metrics.get('Directional_Accuracy', np.nan),
+            'Profit_Factor': metrics.get('Profit_Factor', np.nan)
         }
-        comparison_data.append(row)
+        comparison.append(row)
     
-    df = pd.DataFrame(comparison_data)
-    
-    # Sort by Test R2 score
-    df = df.sort_values('Test_R2', ascending=False)
+    df = pd.DataFrame(comparison)
+    df = df.sort_values('R2', ascending=False)
     
     return df
 
 
-def calculate_directional_accuracy(y_true, y_pred):
-    """
-    Calculate directional accuracy (did we predict the direction correctly?)
-    
-    Args:
-        y_true: True values
-        y_pred: Predicted values
-        
-    Returns:
-        Directional accuracy percentage
-    """
-    # Calculate actual and predicted directions
-    actual_direction = np.diff(y_true) > 0
-    predicted_direction = np.diff(y_pred) > 0
-    
-    # Calculate accuracy
-    correct_predictions = np.sum(actual_direction == predicted_direction)
-    total_predictions = len(actual_direction)
-    
-    accuracy = (correct_predictions / total_predictions) * 100
-    
-    return accuracy
+# ============================================================================
+# LEGACY SUPPORT FUNCTIONS
+# ============================================================================
+
+def calculate_metrics(y_true, y_pred):
+    """Legacy function for backward compatibility"""
+    evaluator = AdvancedEvaluator(y_true, y_pred)
+    metrics = evaluator.calculate_all_metrics()
+    return metrics
 
 
-def evaluate_trading_strategy(y_true, y_pred, initial_investment=10000):
-    """
-    Simulate a simple trading strategy and calculate returns
+def evaluate_all_models(models_dict, X_train, y_train, X_test, y_test, save=True):
+    """Legacy function for backward compatibility"""
+    results = {}
+    y_pred_dict = {}
     
-    Args:
-        y_true: True prices
-        y_pred: Predicted prices
-        initial_investment: Starting capital
+    for name, model in models_dict.items():
+        print(f"\n📊 Evaluating {name}...")
         
-    Returns:
-        Dictionary with strategy results
-    """
-    # Calculate predicted and actual returns
-    predicted_returns = np.diff(y_pred) / y_pred[:-1]
-    actual_returns = np.diff(y_true) / y_true[:-1]
+        y_pred = model.predict(X_test)
+        y_pred_dict[name] = y_pred
+        
+        evaluator = AdvancedEvaluator(y_test, y_pred, name)
+        metrics = evaluator.calculate_all_metrics()
+        evaluator.print_metrics()
+        
+        if save:
+            evaluator.save_metrics(OUTPUTS_DIR)
+        
+        results[name] = {
+            'metrics': metrics,
+            'predictions': y_pred
+        }
     
-    # Simple strategy: buy if we predict price will go up
-    positions = np.where(predicted_returns > 0, 1, 0)
+    # Create comparison table
+    comparison = compare_models(y_test, y_pred_dict)
+    print("\n" + "="*70)
+    print("  MODEL COMPARISON")
+    print("="*70)
+    print(comparison.to_string(index=False))
     
-    # Calculate strategy returns
-    strategy_returns = positions * actual_returns
-    cumulative_returns = np.cumprod(1 + strategy_returns)
-    
-    final_value = initial_investment * cumulative_returns[-1]
-    total_return = ((final_value - initial_investment) / initial_investment) * 100
-    
-    # Buy and hold strategy
-    buy_hold_return = ((y_true[-1] - y_true[0]) / y_true[0]) * 100
-    
-    results = {
-        'initial_investment': initial_investment,
-        'final_value': final_value,
-        'total_return': total_return,
-        'buy_hold_return': buy_hold_return,
-        'excess_return': total_return - buy_hold_return,
-        'num_trades': np.sum(np.diff(positions) != 0)
-    }
+    # Save comparison
+    if save:
+        comparison_path = os.path.join(OUTPUTS_DIR, 'model_comparison.csv')
+        comparison.to_csv(comparison_path, index=False)
+        print(f"\n✅ Comparison saved: {comparison_path}")
     
     return results
 
 
 if __name__ == "__main__":
-    print("Testing Model Evaluation Pipeline...")
+    print("Testing Enhanced Evaluation...")
     
-    # Load processed data
-    filepath = os.path.join(DATA_PROCESSED_DIR, f"{STOCK_SYMBOL}_processed.csv")
+    # Generate sample data
+    np.random.seed(42)
+    n_samples = 100
+    y_true = np.random.uniform(100, 200, n_samples)
+    y_pred = y_true + np.random.normal(0, 5, n_samples)  # Some error
     
-    if os.path.exists(filepath):
-        print(f"📂 Loading processed data...")
-        df = pd.read_csv(filepath)
-        
-        # Prepare features and target
-        X, y, feature_cols = prepare_features_target(df)
-        
-        # Split data
-        X_train, X_test, y_train, y_test = split_data(X, y)
-        
-        # Load trained models
-        model_names = ['linear_regression', 'random_forest', 'xgboost']
-        models = {}
-        
-        for model_name in model_names:
-            try:
-                models[model_name] = load_model(model_name, MODELS_DIR)
-            except FileNotFoundError:
-                print(f"⚠️  Model '{model_name}' not found. Skipping...")
-        
-        if models:
-            # Evaluate all models
-            results = evaluate_all_models(
-                models, X_train, y_train, X_test, y_test, save=True
-            )
-            
-            # Additional analysis for best model
-            best_model_name = 'xgboost'  # or determine from results
-            if best_model_name in models:
-                print_section("Additional Analysis - XGBoost")
-                
-                y_test_pred = models[best_model_name].predict(X_test)
-                
-                # Directional accuracy
-                dir_acc = calculate_directional_accuracy(
-                    y_test.values, y_test_pred
-                )
-                print(f"\n📈 Directional Accuracy: {dir_acc:.2f}%")
-                
-                # Trading strategy simulation
-                strategy_results = evaluate_trading_strategy(
-                    y_test.values, y_test_pred
-                )
-                print("\n💰 Trading Strategy Results:")
-                for key, value in strategy_results.items():
-                    print(f"  {key}: {value:.2f}")
-        else:
-            print("❌ No trained models found. Please run train_model.py first.")
-    else:
-        print(f"❌ Processed data not found at: {filepath}")
-        print("Please run the preprocessing pipeline first.")
+    # Test evaluator
+    evaluator = AdvancedEvaluator(y_true, y_pred, "Test Model")
+    metrics = evaluator.calculate_all_metrics()
+    evaluator.print_metrics()
+    evaluator.save_metrics(OUTPUTS_DIR)
+    
+    print("\n✅ Evaluation test complete!")

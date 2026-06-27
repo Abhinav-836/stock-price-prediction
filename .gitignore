@@ -1,26 +1,293 @@
-# Data
-data/raw/*.csv
-data/processed/*.csv
+# ============================================================
+# STOCK PREDICTION PROJECT - COMPLETE .gitignore
+# ============================================================
 
-# Models
+# ============================================================
+# DATA FILES
+# ============================================================
+data/
+!data/.gitkeep
+data/raw/*.csv
+data/raw/*.parquet
+data/raw/*.feather
+data/processed/*.csv
+data/processed/*.parquet
+data/processed/*.feather
+data/cache/
+data/temp/
+
+# ============================================================
+# MODELS
+# ============================================================
+models/
+!models/.gitkeep
 models/*.pkl
 models/*.h5
+models/*.pb
+models/*.onnx
+models/*.joblib
+models/*.pth
+models/*.pt
+models/*_metadata.json
+models/*_metrics.json
+models/best_model/
 
-# Python
+# ============================================================
+# OUTPUTS & REPORTS
+# ============================================================
+outputs/
+!outputs/.gitkeep
+outputs/predictions/*.csv
+outputs/predictions/*.txt
+outputs/figures/*.png
+outputs/figures/*.jpg
+outputs/figures/*.pdf
+outputs/figures/*.html
+outputs/reports/
+outputs/*.log
+
+# ============================================================
+# LOGS
+# ============================================================
+logs/
+!logs/.gitkeep
+logs/*.log
+logs/*.txt
+*.log
+
+# ============================================================
+# PYTHON CACHE
+# ============================================================
 __pycache__/
 *.py[cod]
+*$py.class
 *.so
 .Python
-env/
+*.pyc
+*.pyo
+*.pyd
+
+# ============================================================
+# VIRTUAL ENVIRONMENTS
+# ============================================================
 venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+pythonenv*
+.venv
+virtualenv/
+pyenv/
 
-# Jupyter
+# ============================================================
+# DEPENDENCIES
+# ============================================================
+requirements.txt
+!requirements.txt
+Pipfile
+Pipfile.lock
+poetry.lock
+pyproject.toml
+!pyproject.toml
+
+# ============================================================
+# JUPYTER NOTEBOOKS
+# ============================================================
 .ipynb_checkpoints/
+*.ipynb_checkpoints
+*.ipynb
+!01_exploration.ipynb
+!02_feature_analysis.ipynb
+!03_experiments.ipynb
+!dashboard.ipynb
+jupyter_notebook_config.py
 
-# IDE
+# ============================================================
+# IDE & EDITOR FILES
+# ============================================================
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+.vscode/settings.json
+.vscode/launch.json
+.vscode/extensions.json
+.idea/workspace.xml
+.idea/encodings.xml
 
-# Outputs
-outputs/
-*.log
+# ============================================================
+# GIT
+# ============================================================
+*.orig
+*.rej
+*.patch
+.gitattributes
+!*.gitattributes
+
+# ============================================================
+# ENVIRONMENT VARIABLES
+# ============================================================
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+config.ini
+credentials.json
+secrets.json
+*.env
+
+# ============================================================
+# STREAMLIT
+# ============================================================
+.streamlit/secrets.toml
+!streamlit/secrets.toml
+.streamlit/cache/
+
+# ============================================================
+# PLOTLY
+# ============================================================
+.plotly/
+.plotly_cache/
+
+# ============================================================
+# DATABASE
+# ============================================================
+*.db
+*.sqlite
+*.sqlite3
+*.duckdb
+
+# ============================================================
+# OS SPECIFIC
+# ============================================================
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Mac
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+
+# Linux
+*~
+.directory
+.dmrc
+.gnupg/
+.thumbnails/
+
+# ============================================================
+# TESTING & COVERAGE
+# ============================================================
+.coverage
+coverage/
+coverage.xml
+.coverage.*
+htmlcov/
+.pytest_cache/
+.pytest_cache/
+.tox/
+*.cover
+coverage.lcov
+reports/
+tests/coverage/
+junit.xml
+
+# ============================================================
+# BUILD & PACKAGE
+# ============================================================
+build/
+dist/
+*.egg-info/
+*.egg
+MANIFEST
+*.whl
+*.tar.gz
+*.zip
+
+# ============================================================
+# MISCELLANEOUS
+# ============================================================
+*.tmp
+*.temp
+.cache/
+.cache/
+*.cache
+*.backup
+*.bak
+*.old
+*.dump
+*.dmp
+*.corrupted
+
+# ============================================================
+# API KEYS & SECRETS (Make sure to never commit these!)
+# ============================================================
+*.key
+*.pem
+*.crt
+*.p12
+*.pfx
+api_keys.txt
+secrets.txt
+*.secret
+
+# ============================================================
+# LARGE FILES (>100MB)
+# ============================================================
+*.h5
+*.pb
+*.onnx
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.bin
+*.tar
+*.gz
+*.7z
+*.rar
+*.zip
+
+# ============================================================
+# DOCUMENTATION BUILD
+# ============================================================
+docs/_build/
+docs/build/
+site/
+_book/
+
+# ============================================================
+# BACKUP FILES
+# ============================================================
+*.bak
+*.backup
+*.old
+*.orig
+*.rej
+*.patch
+*_backup.*
+
+# ============================================================
+# TEMPORARY DATA DOWNLOADS
+# ============================================================
+downloads/
+tmp/
+temp/
+*.downloading
+*.partial
