@@ -21,7 +21,7 @@ scipy==1.11.1
 statsmodels==0.14.0
 
 # Optimization
-optuna==3.3.0
+# optuna==3.3.0
 
 # Utilities
 python-dotenv==1.0.0
