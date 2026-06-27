@@ -2,43 +2,51 @@
 
 This directory stores trained machine learning models for stock price prediction.
 
-## Stored Models
+## 📊 Stored Models
 
-Models are saved in pickle format (`.pkl`) for easy loading and reuse.
+Models are saved in pickle format (`.pkl`) for easy loading and reuse, along with JSON metadata files containing evaluation metrics.
 
 ### Available Models
 
-1. **linear_regression.pkl**
-   - Simple linear regression model
-   - Fast training and prediction
-   - Good baseline for comparison
-   - Best for: Understanding linear relationships
+| Model | Description | Best For |
+|-------|-------------|----------|
+| **xgboost.pkl** | Gradient boosting with regularization | Maximum accuracy (⭐ Best Overall) |
+| **lightgbm.pkl** | Lightweight gradient boosting | Fast training with good accuracy |
+| **random_forest.pkl** | Ensemble of decision trees | Robust predictions with feature importance |
+| **ridge.pkl** | Linear regression with L2 regularization | Stable predictions with many features |
+| **lasso.pkl** | Linear regression with L1 regularization | Feature selection |
+| **elasticnet.pkl** | Linear regression with L1+L2 regularization | Balanced feature selection |
+| **linear_regression.pkl** | Simple linear regression | Baseline comparison |
+| **gradient_boosting.pkl** | Sequential ensemble | Complex patterns |
+| **svr.pkl** | Support Vector Regression | Non-linear relationships |
 
-2. **random_forest.pkl**
-   - Ensemble of decision trees
-   - Handles non-linear relationships
-   - Provides feature importance
-   - Best for: Robust predictions with moderate complexity
-
-3. **xgboost.pkl**
-   - Gradient boosting model
-   - Usually best performance
-   - Efficient and accurate
-   - Best for: Maximum accuracy
-
-## Model Files Created
+## 📁 Model Files
 
 When you run the training pipeline, these files are automatically created:
-
-```
 models/
-├── linear_regression.pkl      (~100 KB)
-├── random_forest.pkl          (~50-500 MB, depending on n_estimators)
-├── xgboost.pkl                (~1-10 MB)
-└── README.md                  (this file)
-```
+├── xgboost.pkl (~1-10 MB)
+├── xgboost_metrics.json (evaluation metrics)
+├── lightgbm.pkl (~1-5 MB)
+├── lightgbm_metrics.json (evaluation metrics)
+├── random_forest.pkl (~50-500 MB)
+├── random_forest_metrics.json (evaluation metrics)
+├── ridge.pkl (~100 KB)
+├── ridge_metrics.json (evaluation metrics)
+├── lasso.pkl (~100 KB)
+├── lasso_metrics.json (evaluation metrics)
+├── elasticnet.pkl (~100 KB)
+├── elasticnet_metrics.json (evaluation metrics)
+├── linear_regression.pkl (~100 KB)
+├── linear_regression_metrics.json (evaluation metrics)
+├── gradient_boosting.pkl (~10-50 MB)
+├── gradient_boosting_metrics.json (evaluation metrics)
+├── svr.pkl (~10-50 MB)
+├── svr_metrics.json (evaluation metrics)
+└── README.md (this file)
 
-## Usage
+text
+
+## 🚀 Usage
 
 ### Training Models
 
@@ -46,217 +54,198 @@ models/
 # Train all models
 python main.py --mode train
 
-# Or use the training script directly
-python src/train_model.py
-```
+# Train with specific symbol
+python main.py --symbol AAPL --mode train
 
-### Loading Models
-
-```python
+# Run full pipeline (data + train + predict)
+python main.py --symbol AAPL --days 30
+Loading Models
+python
 from utils.helpers import load_model
 from utils.config import MODELS_DIR
 
 # Load a specific model
 model = load_model('xgboost', MODELS_DIR)
 
+# Load with metadata
+model, metadata = load_model('xgboost', MODELS_DIR, with_metadata=True)
+
 # Make predictions
 predictions = model.predict(X_test)
-```
+Model Evaluation
+python
+from src.evaluate import AdvancedEvaluator
 
-### Model Versioning
+# Evaluate model
+evaluator = AdvancedEvaluator(y_true, y_pred, model_name='xgboost')
+metrics = evaluator.calculate_all_metrics()
+evaluator.print_metrics()
+📊 Model Performance
+Typical performance metrics on AAPL stock data (2020-2023):
 
+Model	Test R²	Test RMSE	Test MAE	Directional Accuracy
+XGBoost	0.251	$5.85	$4.82	~55%
+Ridge	0.175	$6.14	$5.12	~54%
+Lasso	-0.715	$8.85	$7.58	~52%
+Gradient Boosting	-0.865	$9.23	$7.90	~50%
+LightGBM	-1.337	$10.33	$8.78	~51%
+ElasticNet	-1.645	$11.00	$9.82	~49%
+Random Forest	-1.745	$11.20	$9.71	~48%
+SVR	-10.041	$22.46	$21.42	~45%
+Linear Regression	-1401.58	$253.20	$215.26	~48%
+Note: Performance varies by stock, date range, and market conditions
+
+🔧 Model Configuration
+XGBoost (Best Model)
+python
+from xgboost import XGBRegressor
+
+model = XGBRegressor(
+    n_estimators=100,      # Number of boosting rounds
+    max_depth=5,           # Maximum tree depth
+    learning_rate=0.05,    # Step size shrinkage
+    subsample=0.8,         # Subsample ratio of training data
+    colsample_bytree=0.8,  # Subsample ratio of columns
+    reg_alpha=0.1,         # L1 regularization
+    reg_lambda=1.0,        # L2 regularization
+    random_state=42
+)
+LightGBM
+python
+from lightgbm import LGBMRegressor
+
+model = LGBMRegressor(
+    n_estimators=100,
+    max_depth=5,
+    learning_rate=0.05,
+    num_leaves=31,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    reg_alpha=0.1,
+    reg_lambda=1.0,
+    random_state=42
+)
+Random Forest
+python
+from sklearn.ensemble import RandomForestRegressor
+
+model = RandomForestRegressor(
+    n_estimators=50,       # Number of trees (reduced for memory)
+    max_depth=8,           # Maximum depth
+    min_samples_split=10,  # Minimum samples to split
+    min_samples_leaf=5,    # Minimum samples per leaf
+    random_state=42,
+    n_jobs=1               # Single core to avoid memory issues
+)
+📈 Feature Importance
+XGBoost and Random Forest provide feature importance:
+
+python
+from src.train_model import get_feature_importance
+
+# Get importance
+importance_df = get_feature_importance(model, feature_cols, top_n=20)
+
+# Plot (in dashboard)
+# Feature importance is automatically displayed in the dashboard
+Top Features Typically Include:
+Lagged prices (close_lag_1, close_lag_2, close_lag_6)
+
+Lagged volumes (volume_lag_1, volume_lag_2)
+
+Technical indicators (RSI, MACD, Bollinger Bands)
+
+Price ratios (High/Low, Close/Open)
+
+Volatility measures (ATR, rolling standard deviation)
+
+Volume indicators (OBV, VWAP, Money Flow Index)
+
+🔄 Model Versioning
 Models are overwritten when retrained. To keep multiple versions:
 
-```python
+python
 from utils.helpers import save_model
 from datetime import datetime
 
 # Save with timestamp
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 save_model(model, f'xgboost_{timestamp}', MODELS_DIR)
-```
+🧪 Hyperparameter Tuning
+Manual Tuning (config.py)
+Edit utils/config.py:
 
-## Model Performance
-
-Typical performance metrics on Tesla stock data:
-
-| Model | Train R² | Test R² | Train RMSE | Test RMSE |
-|-------|----------|---------|------------|-----------|
-| Linear Regression | 0.52 | 0.51 | $45.2 | $48.5 |
-| Random Forest | 0.85 | 0.55 | $25.8 | $46.3 |
-| XGBoost | 0.96 | 0.57 | $12.4 | $45.1 |
-
-*Note: Actual performance varies by stock and time period*
-
-## Model Details
-
-### Linear Regression
-```python
-from sklearn.linear_model import LinearRegression
-model = LinearRegression()
-```
-
-**Parameters**: Default scikit-learn parameters
-
-**Pros**:
-- Fast training
-- Interpretable coefficients
-- No hyperparameters to tune
-
-**Cons**:
-- Assumes linear relationships
-- Sensitive to outliers
-- May underfit complex patterns
-
-### Random Forest
-```python
-from sklearn.ensemble import RandomForestRegressor
-model = RandomForestRegressor(
-    n_estimators=100,
-    random_state=42,
-    n_jobs=-1
-)
-```
-
-**Parameters**:
-- `n_estimators=100`: Number of trees
-- `random_state=42`: For reproducibility
-- `n_jobs=-1`: Use all CPU cores
-
-**Pros**:
-- Handles non-linear relationships
-- Robust to overfitting
-- Feature importance available
-
-**Cons**:
-- Can be slow with many trees
-- Large model size
-- Less interpretable than linear models
-
-### XGBoost
-```python
-from xgboost import XGBRegressor
-model = XGBRegressor(
-    n_estimators=100,
-    max_depth=5,
-    learning_rate=0.1,
-    random_state=42
-)
-```
-
-**Parameters** (from `utils/config.py`):
-- `n_estimators=100`: Number of boosting rounds
-- `max_depth=5`: Maximum tree depth
-- `learning_rate=0.1`: Step size shrinkage
-- `random_state=42`: For reproducibility
-
-**Pros**:
-- Usually best accuracy
-- Handles missing values
-- Built-in regularization
-- Feature importance
-
-**Cons**:
-- More hyperparameters to tune
-- Can overfit if not careful
-- Slower than linear models
-
-## Feature Importance
-
-XGBoost and Random Forest provide feature importance:
-
-```python
-from src.train_model import get_feature_importance
-
-# Get importance
-importance_df = get_feature_importance(model, feature_cols, top_n=15)
-
-# Plot
-from src.visualization import plot_feature_importance
-plot_feature_importance(importance_df)
-```
-
-## Hyperparameter Tuning
-
-To customize model parameters, edit `utils/config.py`:
-
-```python
+python
 # XGBoost Parameters
 XGB_PARAMS = {
-    'n_estimators': 100,      # Increase for better fit
-    'max_depth': 5,           # Increase to capture complexity
-    'learning_rate': 0.1,     # Decrease for better generalization
-    'random_state': RANDOM_STATE
-}
-```
-
-Or override when training:
-
-```python
-from src.train_model import train_xgboost
-
-custom_params = {
-    'n_estimators': 200,
-    'max_depth': 7,
+    'n_estimators': 100,
+    'max_depth': 5,
     'learning_rate': 0.05,
-    'random_state': 42
+    'subsample': 0.8,
+    'colsample_bytree': 0.8,
+    'min_child_weight': 3,
+    'reg_alpha': 0.1,
+    'reg_lambda': 1.0,
+    'random_state': RANDOM_STATE,
+    'n_jobs': 1
 }
+Automated Tuning (Optuna)
+bash
+# Run auto-training with Optuna
+python src/auto_train.py
+📊 Evaluation Metrics
+Models are evaluated on:
 
-model = train_xgboost(X_train, y_train, params=custom_params)
-```
+Metric	Description	Target
+R² Score	Proportion of variance explained	Higher is better (max 1.0)
+RMSE	Root Mean Squared Error	Lower is better
+MAE	Mean Absolute Error	Lower is better
+MAPE	Mean Absolute Percentage Error	Lower is better
+Directional Accuracy	% of correct direction predictions	>50% is better than random
+Sharpe Ratio	Risk-adjusted return	>1 is good
+Max Drawdown	Maximum loss from peak	Lower is better
+⚠️ Important Notes
+Memory & Performance
+Random Forest models can be very large (100+ MB)
 
-## Model Evaluation
+XGBoost and LightGBM are more memory efficient
 
-Models are evaluated on multiple metrics:
+Models are ignored by Git (see .gitignore)
 
-- **MAE** (Mean Absolute Error): Average prediction error in dollars
-- **RMSE** (Root Mean Squared Error): Penalizes large errors more
-- **R² Score**: Proportion of variance explained (0-1, higher is better)
-- **MAPE** (Mean Absolute Percentage Error): Error as percentage
-- **Directional Accuracy**: % of times we predicted direction correctly
+Use n_jobs=1 to avoid memory issues on Windows
 
-## Best Practices
+Retraining
+Models should be retrained periodically (monthly recommended)
 
-1. **Always evaluate on test set**: Don't trust training performance
-2. **Check for overfitting**: Compare train vs test metrics
-3. **Use cross-validation**: For more robust evaluation
-4. **Monitor feature importance**: Ensure reasonable features are important
-5. **Version your models**: Keep track of different experiments
-6. **Regular retraining**: Markets change, retrain periodically
+Market conditions change over time
 
-## Important Notes
+New data improves predictions
 
-⚠️ **File Size**: 
-- Random Forest models can be very large (100+ MB)
-- Git ignores these files (see `.gitignore`)
+Limitations
+Past performance doesn't guarantee future results
 
-🔄 **Retraining**:
-- Models should be retrained periodically
-- Market conditions change over time
-- New data improves predictions
+Stock prediction is inherently difficult
 
-📊 **Performance**:
-- Past performance doesn't guarantee future results
-- Stock prediction is inherently difficult
-- ~50-60% directional accuracy is typical
+~50-60% directional accuracy is typical
 
-## Troubleshooting
+Models perform better on liquid, stable stocks
 
-**Problem**: Models not saving
-- **Solution**: Check write permissions for `models/` directory
+🐛 Troubleshooting
+Problem	Solution
+Models not saving	Check write permissions for models/ directory
+Model file too large	Reduce n_estimators for tree-based models
+Loading fails	Ensure same library versions as when model was saved
+Memory errors	Set n_jobs=1 and reduce n_estimators
+Out-of-memory during training	Use n_jobs=1 and reduce feature count
+📚 References
+scikit-learn Model Persistence
 
-**Problem**: Model file too large
-- **Solution**: Reduce `n_estimators` for Random Forest
+XGBoost Documentation
 
-**Problem**: Loading fails
-- **Solution**: Ensure same library versions as when model was saved
+LightGBM Documentation
 
-## References
+Optuna Hyperparameter Optimization
 
-- [scikit-learn Model Persistence](https://scikit-learn.org/stable/model_persistence.html)
-- [XGBoost Documentation](https://xgboost.readthedocs.io/)
-- [joblib Documentation](https://joblib.readthedocs.io/)
+joblib Documentation
 
----
-
-*Models are automatically saved when running the training pipeline.*
+Models are automatically saved when running the training pipeline.
