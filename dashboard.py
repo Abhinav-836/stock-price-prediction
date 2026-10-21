@@ -16,6 +16,7 @@ Fixes vs previous version:
   * Predictions started ~2 weeks before the last real date and were a flat line (see predict.py).
   * Feature-importance tab crashed / mislabelled for pipeline models (SVR, Ridge).
   * Drawdown x-axis was misaligned with the returns series.
+  * Price chart legend overlapped the first subplot title (legend now sits above it).
   * Added: model comparison vs a zero-return baseline, so users can see whether the model
     has any real edge, plus currency symbol for NSE/BSE tickers.
 """
@@ -156,7 +157,7 @@ def render_price_chart(df):
                                      line=dict(color=color, width=1)), row=1, col=1)
     if len(df) > 20:
         mid, sd = close.rolling(20).mean(), close.rolling(20).std()
-        for y, name in [(mid + 2 * sd, 'BB Upper'), (mid - 2 * sd, 'BB Lower')]:
+        for y, name in [(mid + 2 * sd, 'BB Up'), (mid - 2 * sd, 'BB Low')]:
             fig.add_trace(go.Scatter(x=x, y=y, name=name, line=dict(color='rgba(160,160,160,0.6)', width=1,
                                                                    dash='dash')), row=1, col=1)
 
@@ -175,11 +176,17 @@ def render_price_chart(df):
     hist = macd - signal
     fig.add_trace(go.Scatter(x=x, y=macd, name='MACD', line=dict(color='#4f8bf9')), row=4, col=1)
     fig.add_trace(go.Scatter(x=x, y=signal, name='Signal', line=dict(color='tomato')), row=4, col=1)
-    fig.add_trace(go.Bar(x=x, y=hist, name='MACD Hist', opacity=0.5,
+    fig.add_trace(go.Bar(x=x, y=hist, name='Hist', opacity=0.5,
                          marker_color=np.where(hist >= 0, 'green', 'red')), row=4, col=1)
 
-    fig.update_layout(height=850, template=TEMPLATE, xaxis_rangeslider_visible=False,
-                      legend=dict(orientation='h', y=1.03))
+    # FIX: legend was at y=1.03 (same height as the first subplot title) -> overlapping text.
+    # Anchor it by its bottom edge above the title and reserve top margin for up to 2 wrapped rows.
+    fig.update_layout(
+        height=900, template=TEMPLATE, xaxis_rangeslider_visible=False,
+        margin=dict(t=120, b=30, l=10, r=10),
+        legend=dict(orientation='h', yanchor='bottom', y=1.06, xanchor='left', x=0,
+                    font=dict(size=11), bgcolor='rgba(0,0,0,0)'),
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 
