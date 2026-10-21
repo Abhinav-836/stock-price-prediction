@@ -1,786 +1,380 @@
 """
-Interactive Stock Prediction Dashboard - COMPLETE WITH ALL GRAPHS
+Interactive Stock Prediction Dashboard - FIXED for Streamlit Cloud
+
+Fixes vs previous version:
+  * Everything disappeared on ANY widget interaction (download button, tabs, slider):
+    results lived on a dashboard object that Streamlit re-creates on every rerun, and the
+    page only rendered while `st.button` was True (one rerun). Now the request is kept in
+    st.session_state and the heavy work is cached (st.cache_resource / st.cache_data).
+  * Every click re-trained 9 models + cross-validation and wrote .pkl files to disk.
+    Training is cached per (symbol, dates, data mode); CV and model saving are off.
+  * Selected dates were ignored: data was downloaded for config.START_DATE..END_DATE and
+    then filtered, so most ranges fell back to synthetic data. Data is now fetched for the
+    chosen range (+ warm-up history for 200-day indicators).
+  * "Data Type: Real/Synthetic" was guessed with `'synthetic' in str(df)` (always "Real").
+    The loader now reports the actual source and synthetic data shows a warning banner.
+  * Predictions started ~2 weeks before the last real date and were a flat line (see predict.py).
+  * Feature-importance tab crashed / mislabelled for pipeline models (SVR, Ridge).
+  * Drawdown x-axis was misaligned with the returns series.
+  * Added: model comparison vs a zero-return baseline, so users can see whether the model
+    has any real edge, plus currency symbol for NSE/BSE tickers.
 """
-import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import plotly.express as px
-from datetime import datetime, timedelta
 import os
 import sys
-import warnings
-warnings.filterwarnings('ignore')
+from datetime import date, timedelta
 
-# Add src to path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+from plotly.subplots import make_subplots
 
-from utils.config import STOCK_SYMBOL, START_DATE, END_DATE
-from src.data_loader import StockDataLoader
-from src.preprocess import preprocess_data
-from src.train_model import prepare_features_target, split_data, ModelTrainer
-from src.predict import PredictionEngine
+ROOT = os.path.dirname(os.path.abspath(__file__))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-# Page configuration
-st.set_page_config(
-    page_title="📈 Stock Prediction Dashboard",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+from src.pipeline import run_analysis, forecast, feature_importance  # noqa: E402
 
-# Custom CSS
+st.set_page_config(page_title="Stock Prediction Dashboard", page_icon="📈",
+                   layout="wide", initial_sidebar_state="expanded")
+
 st.markdown("""
     <style>
     .main-header {
-        font-size: 2.5rem;
-        text-align: center;
-        margin-bottom: 1rem;
-        padding: 1rem;
+        font-size: 2.2rem; text-align: center; margin-bottom: 1rem; padding: 1rem;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        border-radius: 10px;
-        color: white;
+        border-radius: 10px; color: white;
     }
     .stButton > button {
-        width: 100%;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        font-weight: bold;
-        border: none;
-        padding: 0.75rem;
-        border-radius: 10px;
-    }
-    .stButton > button:hover {
-        transform: scale(1.02);
-        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        width: 100%; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white; font-weight: bold; border: none; padding: 0.75rem; border-radius: 10px;
     }
     </style>
 """, unsafe_allow_html=True)
 
+TEMPLATE = 'plotly_dark'
 
-class StockDashboard:
-    """Complete Stock Prediction Dashboard with ALL Graphs"""
-    
-    def __init__(self):
-        self.symbol = None
-        self.df_raw = None
-        self.df_processed = None
-        self.predictions = None
-        self.models = None
-        self.results = None
-        self.start_date = None
-        self.end_date = None
-        self.best_model_name = None
-        self.feature_cols = None
-        
-    def load_data_with_date_range(self, symbol, start_date, end_date, force_download=False, use_synthetic=False):
-        """Load data for specific date range"""
-        try:
-            loader = StockDataLoader(symbol=symbol)
-            self.df_raw = loader.load_stock_data(symbol, force_download=force_download)
-            
-            if self.df_raw is None:
-                st.error(f"Could not load data for {symbol}")
-                return False
-            
-            # Handle timezone properly
-            if not pd.api.types.is_datetime64_any_dtype(self.df_raw['Date']):
-                self.df_raw['Date'] = pd.to_datetime(self.df_raw['Date'], utc=True)
-                self.df_raw['Date'] = self.df_raw['Date'].dt.tz_localize(None)
-            else:
-                if self.df_raw['Date'].dt.tz is not None:
-                    self.df_raw['Date'] = self.df_raw['Date'].dt.tz_localize(None)
-            
-            # Filter by date range
-            start_dt = pd.to_datetime(start_date)
-            end_dt = pd.to_datetime(end_date)
-            
-            mask = (self.df_raw['Date'] >= start_dt) & (self.df_raw['Date'] <= end_dt)
-            filtered_df = self.df_raw[mask]
-            
-            # If no data in range OR use_synthetic is True, use synthetic
-            if len(filtered_df) < 30 or use_synthetic:
-                st.info(f"Using synthetic data for {symbol} (only {len(filtered_df)} days in range)")
-                from create_enough_data import StockDataGenerator
-                days_needed = max(365, (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days)
-                generator = StockDataGenerator(symbol=symbol, days=days_needed)
-                self.df_raw = generator.create_working_dataset()
-                st.success(f"✅ Generated {len(self.df_raw)} days of synthetic data")
-            else:
-                self.df_raw = filtered_df
-                st.success(f"✅ Using REAL data: {len(self.df_raw)} days from {start_date} to {end_date}")
-            
-            self.symbol = symbol
-            self.start_date = start_date
-            self.end_date = end_date
-            
-            with st.spinner("Preprocessing data..."):
-                self.df_processed = preprocess_data(self.df_raw, save=False, scale=False)
-            
-            return True
-            
-        except Exception as e:
-            st.error(f"Error loading data: {e}")
-            return False
-    
-    def train_models_automatically(self):
-        """Train models automatically on loaded data"""
-        if self.df_processed is None:
-            return False
-        
-        try:
-            with st.spinner("🧠 Training models... This may take a moment..."):
-                X, y, self.feature_cols = prepare_features_target(self.df_processed)
-                X_train, X_test, y_train, y_test = split_data(X, y)
-                
-                trainer = ModelTrainer(X_train, y_train, X_test, y_test, self.feature_cols)
-                self.results = trainer.train_and_evaluate_all(save_models=True)
-                self.models = trainer.models
-                
-                # Get best model
-                best_model, best_name = trainer.get_best_model()
-                self.best_model_name = best_name
-                
-                return True
-                
-        except Exception as e:
-            st.error(f"Error training models: {e}")
-            import traceback
-            st.error(traceback.format_exc())
-            return False
-    
-    def generate_predictions(self, days=30):
-        """Generate predictions using ALL features"""
-        if self.df_processed is None or self.models is None:
-            return None
-        
-        try:
-            with st.spinner(f"🔮 Generating predictions for next {days} days..."):
-                if self.best_model_name is None or self.best_model_name not in self.models:
-                    self.best_model_name = max(self.results.keys(), key=lambda x: self.results[x]['metrics']['test_r2'])
-                
-                model = self.models[self.best_model_name]
-                
-                if self.feature_cols is None:
-                    exclude_cols = ['Date', 'target', 'target_class'] + [col for col in self.df_processed.columns if 'target_' in col]
-                    self.feature_cols = [col for col in self.df_processed.columns if col not in exclude_cols]
-                    self.feature_cols = [col for col in self.feature_cols if not col.endswith('d')]
-                    self.feature_cols = [col for col in self.feature_cols if 'target' not in col]
-                
-                engine = PredictionEngine(model_name=self.best_model_name, model=model)
-                self.predictions = engine.predict_future(self.df_processed, self.feature_cols, days=days)
-                
-                return self.predictions
-                
-        except Exception as e:
-            st.error(f"Error generating predictions: {e}")
-            import traceback
-            st.error(traceback.format_exc())
-            return None
-    
-    def render_sidebar(self):
-        """Render sidebar with controls"""
-        with st.sidebar:
-            st.markdown("### 🔧 Controls")
-            
-            symbol = st.text_input("Stock Symbol", value="AAPL").upper()
-            
-            st.markdown("### 📅 Date Range")
-            
+
+# ============================================================================
+# CACHED COMPUTATION (survives reruns; shared across sessions)
+# ============================================================================
+
+@st.cache_resource(show_spinner=False, max_entries=6, ttl=3600)
+def cached_analysis(symbol: str, start: date, end: date, use_synthetic: bool):
+    return run_analysis(symbol, start, end, use_synthetic=use_synthetic, run_cv=False, verbose=False)
+
+
+@st.cache_data(show_spinner=False, max_entries=32, ttl=3600)
+def cached_forecast(symbol: str, start: date, end: date, use_synthetic: bool, days: int, model_name: str):
+    analysis = cached_analysis(symbol, start, end, use_synthetic)
+    return forecast(analysis, days=days, model_name=model_name)
+
+
+def currency_for(symbol: str) -> str:
+    return '₹' if symbol.endswith(('.NS', '.BO')) else '$'
+
+
+# ============================================================================
+# SIDEBAR
+# ============================================================================
+
+def render_sidebar():
+    with st.sidebar:
+        st.markdown("### 🔧 Controls")
+        with st.form("controls"):
+            symbol = st.text_input("Stock Symbol", value="AAPL",
+                                   help="Yahoo Finance ticker, e.g. AAPL, MSFT, RELIANCE.NS").upper().strip()
+            today = date.today()
             col1, col2 = st.columns(2)
-            with col1:
-                start_date = st.date_input(
-                    "Start Date",
-                    value=datetime(2020, 1, 1),  # Use existing data range
-                    max_value=datetime.now()
-                )
-            with col2:
-                end_date = st.date_input(
-                    "End Date",
-                    value=datetime(2023, 12, 29),  # Use existing data range
-                    max_value=datetime.now()
-                )
-            
-            if start_date >= end_date:
-                st.warning("⚠️ Start date must be before end date")
-                st.stop()
-            
-            st.markdown("### 🎯 Prediction Settings")
-            prediction_days = st.slider(
-                "Prediction Horizon (Days)",
-                min_value=1,
-                max_value=90,
-                value=30
-            )
-            
-            st.markdown("### 🔄 Data Options")
-            use_synthetic = st.checkbox("Use Synthetic Data", value=False)
-            force_refresh = st.checkbox("Force Refresh Data", value=False)
-            
-            process_btn = st.button("🚀 Process & Analyze", type="primary")
-            
-            st.markdown("---")
-            st.markdown("### ℹ️ Info")
-            st.markdown(f"**Symbol:** {symbol}")
-            st.markdown(f"**Date Range:** {start_date} to {end_date}")
-            if self.df_raw is not None:
-                st.markdown(f"**Data Points:** {len(self.df_raw)} days")
-                st.markdown(f"**Data Type:** {'Synthetic' if 'synthetic' in str(self.df_raw).lower() else 'Real'}")
-            if self.best_model_name is not None:
-                st.markdown(f"**Best Model:** {self.best_model_name}")
-            
-            return {
-                'symbol': symbol,
-                'start_date': start_date,
-                'end_date': end_date,
-                'prediction_days': prediction_days,
-                'use_synthetic': use_synthetic,
-                'force_refresh': force_refresh,
-                'process_btn': process_btn
-            }
-    
-    def render_metrics(self):
-        """Render key metrics"""
-        if self.df_raw is None or len(self.df_raw) < 2:
-            return
-        
-        col1, col2, col3, col4, col5 = st.columns(5)
-        
-        latest = self.df_raw.iloc[-1]
-        prev = self.df_raw.iloc[-2] if len(self.df_raw) > 1 else latest
-        
-        with col1:
-            price_change = ((latest['Close'] - prev['Close']) / prev['Close'] * 100) if prev['Close'] != 0 else 0
-            st.metric(
-                label="💰 Current Price",
-                value=f"${latest['Close']:.2f}",
-                delta=f"{price_change:+.2f}%"
-            )
-        
-        with col2:
-            vol_change = ((latest['Volume'] - self.df_raw['Volume'].mean()) / self.df_raw['Volume'].mean() * 100)
-            st.metric(
-                label="📊 Volume",
-                value=f"{latest['Volume']/1e6:.1f}M",
-                delta=f"{vol_change:+.1f}%"
-            )
-        
-        with col3:
-            st.metric(
-                label="📈 Day Range",
-                value=f"${latest['Low']:.2f} - ${latest['High']:.2f}",
-                delta=f"Spread: ${latest['High'] - latest['Low']:.2f}"
-            )
-        
-        with col4:
-            volatility = self.df_raw['Close'].pct_change().std() * np.sqrt(252) * 100
-            st.metric(
-                label="📉 Volatility",
-                value=f"{volatility:.1f}%"
-            )
-        
-        with col5:
-            total_return = ((latest['Close'] - self.df_raw['Close'].iloc[0]) / self.df_raw['Close'].iloc[0] * 100)
-            st.metric(
-                label="📊 Total Return",
-                value=f"{total_return:+.1f}%"
-            )
-    
-    def render_price_chart(self):
-        """Render interactive price chart"""
-        if self.df_raw is None:
-            return
-        
-        fig = make_subplots(
-            rows=4, cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.05,
-            subplot_titles=('Price History with Moving Averages', 'Trading Volume', 
-                           'RSI (Relative Strength Index)', 'MACD'),
-            row_heights=[0.5, 0.15, 0.175, 0.175]
-        )
-        
-        # Candlestick
-        fig.add_trace(
-            go.Candlestick(
-                x=self.df_raw['Date'],
-                open=self.df_raw['Open'],
-                high=self.df_raw['High'],
-                low=self.df_raw['Low'],
-                close=self.df_raw['Close'],
-                name='Price'
-            ),
-            row=1, col=1
-        )
-        
-        # Moving averages
-        for period, color in [(20, 'orange'), (50, 'green'), (200, 'red')]:
-            if len(self.df_raw) > period:
-                ma = self.df_raw['Close'].rolling(period).mean()
-                fig.add_trace(
-                    go.Scatter(
-                        x=self.df_raw['Date'],
-                        y=ma,
-                        name=f'SMA {period}',
-                        line=dict(color=color, width=1)
-                    ),
-                    row=1, col=1
-                )
-        
-        # Bollinger Bands
-        if len(self.df_raw) > 20:
-            rolling_mean = self.df_raw['Close'].rolling(20).mean()
-            rolling_std = self.df_raw['Close'].rolling(20).std()
-            fig.add_trace(
-                go.Scatter(
-                    x=self.df_raw['Date'],
-                    y=rolling_mean + (rolling_std * 2),
-                    name='BB Upper',
-                    line=dict(color='rgba(128,128,128,0.5)', width=1, dash='dash')
-                ),
-                row=1, col=1
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=self.df_raw['Date'],
-                    y=rolling_mean - (rolling_std * 2),
-                    name='BB Lower',
-                    line=dict(color='rgba(128,128,128,0.5)', width=1, dash='dash')
-                ),
-                row=1, col=1
-            )
-        
-        # Volume
-        colors = ['green' if close >= open else 'red' 
-                  for close, open in zip(self.df_raw['Close'], self.df_raw['Open'])]
-        fig.add_trace(
-            go.Bar(
-                x=self.df_raw['Date'],
-                y=self.df_raw['Volume'],
-                name='Volume',
-                marker_color=colors,
-                opacity=0.5
-            ),
-            row=2, col=1
-        )
-        
-        # RSI
-        if len(self.df_raw) > 14:
-            delta = self.df_raw['Close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
-            
-            fig.add_trace(
-                go.Scatter(
-                    x=self.df_raw['Date'],
-                    y=rsi,
-                    name='RSI',
-                    line=dict(color='purple')
-                ),
-                row=3, col=1
-            )
-            fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
-            fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
-            fig.update_yaxes(range=[0, 100], row=3, col=1)
-        
-        # MACD
-        if len(self.df_raw) > 26:
-            exp1 = self.df_raw['Close'].ewm(span=12, adjust=False).mean()
-            exp2 = self.df_raw['Close'].ewm(span=26, adjust=False).mean()
-            macd = exp1 - exp2
-            signal = macd.ewm(span=9, adjust=False).mean()
-            
-            fig.add_trace(
-                go.Scatter(
-                    x=self.df_raw['Date'],
-                    y=macd,
-                    name='MACD',
-                    line=dict(color='blue')
-                ),
-                row=4, col=1
-            )
-            fig.add_trace(
-                go.Scatter(
-                    x=self.df_raw['Date'],
-                    y=signal,
-                    name='Signal',
-                    line=dict(color='red')
-                ),
-                row=4, col=1
-            )
-            
-            macd_diff = macd - signal
-            colors_macd = ['green' if val >= 0 else 'red' for val in macd_diff]
-            fig.add_trace(
-                go.Bar(
-                    x=self.df_raw['Date'],
-                    y=macd_diff,
-                    name='MACD Histogram',
-                    marker_color=colors_macd,
-                    opacity=0.5
-                ),
-                row=4, col=1
-            )
-        
-        fig.update_layout(
-            height=800,
-            template='plotly_dark',
-            showlegend=True,
-            xaxis_rangeslider_visible=False
-        )
-        
-        st.plotly_chart(fig, use_container_width=True)
-    
-    def render_correlation_matrix(self):
-        """Render correlation matrix"""
-        if self.df_raw is None:
-            return
-        
-        st.markdown("### 📊 Correlation Matrix")
-        
-        # Select numeric columns
-        corr_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-        if all(col in self.df_raw.columns for col in corr_cols):
-            corr_matrix = self.df_raw[corr_cols].corr()
-            
-            fig = px.imshow(
-                corr_matrix,
-                text_auto=True,
-                title='Correlation Matrix of OHLC & Volume',
-                color_continuous_scale='RdBu_r',
-                zmin=-1,
-                zmax=1
-            )
-            fig.update_layout(
-                template='plotly_dark',
-                height=500
-            )
-            st.plotly_chart(fig, use_container_width=True)
-    
-    def render_predictions(self):
-        """Render predictions"""
-        if self.predictions is None:
-            st.info("💡 Click 'Process & Analyze' to generate predictions.")
-            return
-        
-        st.markdown("### 🔮 Price Predictions")
-        
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            fig = go.Figure()
-            
-            # Historical data
-            historical = self.df_raw.tail(100)
-            fig.add_trace(
-                go.Scatter(
-                    x=historical['Date'],
-                    y=historical['Close'],
-                    name='Historical',
-                    line=dict(color='blue', width=2)
-                )
-            )
-            
-            # Predictions
-            pred_col = 'Predicted_Close'
-            pred_dates = self.predictions['Date'] if 'Date' in self.predictions.columns else None
-            
-            fig.add_trace(
-                go.Scatter(
-                    x=pred_dates,
-                    y=self.predictions[pred_col],
-                    name='Predictions',
-                    line=dict(color='red', width=2, dash='dash')
-                )
-            )
-            
-            # Confidence intervals
-            if 'Lower_Bound' in self.predictions.columns:
-                fig.add_trace(
-                    go.Scatter(
-                        x=pred_dates,
-                        y=self.predictions['Upper_Bound'],
-                        fill=None,
-                        mode='lines',
-                        name='Upper Bound',
-                        line=dict(color='rgba(255,0,0,0.2)')
-                    )
-                )
-                fig.add_trace(
-                    go.Scatter(
-                        x=pred_dates,
-                        y=self.predictions['Lower_Bound'],
-                        fill='tonexty',
-                        mode='lines',
-                        name='Lower Bound',
-                        line=dict(color='rgba(255,0,0,0.2)')
-                    )
-                )
-            
-            fig.update_layout(
-                title='Price Prediction with Confidence Intervals',
-                xaxis_title='Date',
-                yaxis_title='Price ($)',
-                template='plotly_dark',
-                height=500
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            last_price = self.df_raw['Close'].iloc[-1]
-            final_price = self.predictions[pred_col].iloc[-1]
-            expected_return = ((final_price - last_price) / last_price) * 100
-            
-            st.markdown(f"""
-            ### 📊 Prediction Summary
-            
-            | Metric | Value |
-            |--------|-------|
-            | **Current Price** | ${last_price:.2f} |
-            | **Predicted Price** | ${final_price:.2f} |
-            | **Expected Return** | {expected_return:+.2f}% |
-            | **Horizon** | {len(self.predictions)} Days |
-            """)
-            
-            if expected_return > 3:
-                st.success(f"✅ **Recommendation:** BUY ({expected_return:+.2f}%)")
-            elif expected_return < -3:
-                st.error(f"❌ **Recommendation:** SELL ({expected_return:+.2f}%)")
+            start_date = col1.date_input("Start Date", value=today - timedelta(days=3 * 365), max_value=today)
+            end_date = col2.date_input("End Date", value=today, max_value=today)
+            prediction_days = st.slider("Forecast Horizon (business days)", 1, 90, 30)
+            use_synthetic = st.checkbox("Use Synthetic Data (offline demo)", value=False)
+            force_refresh = st.checkbox("Force Refresh (ignore cache)", value=False)
+            submitted = st.form_submit_button("🚀 Process & Analyze", type="primary")
+
+        if submitted:
+            if not symbol:
+                st.error("Enter a symbol.")
+            elif start_date >= end_date:
+                st.error("Start date must be before end date.")
             else:
-                st.warning(f"⚠️ **Recommendation:** HOLD ({expected_return:+.2f}%)")
-    
-    def render_returns_distribution(self):
-        """Render returns distribution"""
-        if self.df_raw is None:
+                if force_refresh:
+                    cached_analysis.clear()
+                    cached_forecast.clear()
+                st.session_state['params'] = dict(symbol=symbol, start=start_date, end=end_date,
+                                                  use_synthetic=use_synthetic, days=prediction_days)
+                st.session_state.pop('model_choice', None)
+
+        params = st.session_state.get('params')
+        if params:
+            st.markdown("---\n### ℹ️ Current analysis")
+            st.markdown(f"**Symbol:** {params['symbol']}  \n"
+                        f"**Range:** {params['start']} → {params['end']}  \n"
+                        f"**Horizon:** {params['days']} days")
+        return params
+
+
+# ============================================================================
+# SECTIONS
+# ============================================================================
+
+def render_source_banner(a):
+    if a['source'] == 'synthetic':
+        st.warning("⚠️ **Synthetic data.** Yahoo Finance returned nothing (bad ticker, rate limit, or "
+                   "offline mode). Charts and forecasts below are for demonstration only.")
+    else:
+        st.success(f"✅ Real market data from Yahoo Finance: {len(a['raw_view'])} trading days "
+                   f"({a['raw_view']['Date'].iloc[0].date()} → {a['raw_view']['Date'].iloc[-1].date()})")
+
+
+def render_metrics(df, cur):
+    if len(df) < 2:
+        return
+    latest, prev = df.iloc[-1], df.iloc[-2]
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("💰 Last Close", f"{cur}{latest['Close']:.2f}", f"{(latest['Close'] / prev['Close'] - 1) * 100:+.2f}%")
+    avg_vol = df['Volume'].mean()
+    c2.metric("📊 Volume", f"{latest['Volume'] / 1e6:.1f}M",
+              f"{(latest['Volume'] / avg_vol - 1) * 100:+.1f}% vs avg" if avg_vol else None)
+    c3.metric("📈 Day Range", f"{cur}{latest['Low']:.2f} – {cur}{latest['High']:.2f}")
+    c4.metric("📉 Volatility (ann.)", f"{df['Close'].pct_change().std() * np.sqrt(252) * 100:.1f}%")
+    c5.metric("📊 Total Return", f"{(latest['Close'] / df['Close'].iloc[0] - 1) * 100:+.1f}%")
+
+
+def render_price_chart(df):
+    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.04,
+                        subplot_titles=('Price, Moving Averages & Bollinger Bands', 'Volume', 'RSI (14)', 'MACD'),
+                        row_heights=[0.5, 0.15, 0.175, 0.175])
+    x, close = df['Date'], df['Close']
+    fig.add_trace(go.Candlestick(x=x, open=df['Open'], high=df['High'], low=df['Low'], close=close,
+                                 name='Price'), row=1, col=1)
+    for period, color in [(20, 'orange'), (50, 'lightgreen'), (200, 'red')]:
+        if len(df) > period:
+            fig.add_trace(go.Scatter(x=x, y=close.rolling(period).mean(), name=f'SMA {period}',
+                                     line=dict(color=color, width=1)), row=1, col=1)
+    if len(df) > 20:
+        mid, sd = close.rolling(20).mean(), close.rolling(20).std()
+        for y, name in [(mid + 2 * sd, 'BB Upper'), (mid - 2 * sd, 'BB Lower')]:
+            fig.add_trace(go.Scatter(x=x, y=y, name=name, line=dict(color='rgba(160,160,160,0.6)', width=1,
+                                                                   dash='dash')), row=1, col=1)
+
+    colors = np.where(close >= df['Open'], 'green', 'red')
+    fig.add_trace(go.Bar(x=x, y=df['Volume'], name='Volume', marker_color=colors, opacity=0.5), row=2, col=1)
+
+    delta = close.diff()
+    rsi = 100 - 100 / (1 + delta.clip(lower=0).rolling(14).mean() / (-delta.clip(upper=0)).rolling(14).mean())
+    fig.add_trace(go.Scatter(x=x, y=rsi, name='RSI', line=dict(color='violet')), row=3, col=1)
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=3, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=3, col=1)
+    fig.update_yaxes(range=[0, 100], row=3, col=1)
+
+    macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+    signal = macd.ewm(span=9, adjust=False).mean()
+    hist = macd - signal
+    fig.add_trace(go.Scatter(x=x, y=macd, name='MACD', line=dict(color='#4f8bf9')), row=4, col=1)
+    fig.add_trace(go.Scatter(x=x, y=signal, name='Signal', line=dict(color='tomato')), row=4, col=1)
+    fig.add_trace(go.Bar(x=x, y=hist, name='MACD Hist', opacity=0.5,
+                         marker_color=np.where(hist >= 0, 'green', 'red')), row=4, col=1)
+
+    fig.update_layout(height=850, template=TEMPLATE, xaxis_rangeslider_visible=False,
+                      legend=dict(orientation='h', y=1.03))
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_returns_distribution(df):
+    st.markdown("### 📊 Returns Distribution")
+    returns = df['Close'].pct_change().dropna() * 100
+    fig = px.histogram(returns, nbins=60, title='Daily Returns (%)', color_discrete_sequence=['#4f8bf9'])
+    fig.add_vline(x=0, line_dash="dash", line_color="red")
+    fig.update_layout(template=TEMPLATE, height=380, showlegend=False)
+    st.plotly_chart(fig, use_container_width=True)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Mean Daily Return", f"{returns.mean():.3f}%")
+    c2.metric("Std Dev", f"{returns.std():.3f}%")
+    c3.metric("Sharpe (ann., rf=0)", f"{returns.mean() / returns.std() * np.sqrt(252):.2f}" if returns.std() else "n/a")
+
+
+def render_correlation_matrix(df):
+    st.markdown("### 📊 Correlation Matrix")
+    corr = df[['Open', 'High', 'Low', 'Close', 'Volume']].corr()
+    fig = px.imshow(corr, text_auto='.2f', color_continuous_scale='RdBu_r', zmin=-1, zmax=1,
+                    title='OHLC & Volume')
+    fig.update_layout(template=TEMPLATE, height=450)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_risk_metrics(df):
+    st.markdown("### 📊 Risk Metrics (buy & hold)")
+    returns = df.set_index('Date')['Close'].pct_change().dropna()
+    if len(returns) < 2:
+        return
+    equity = (1 + returns).cumprod()
+    drawdown = equity / equity.cummax() - 1
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("📉 VaR 95% (1-day)", f"{np.percentile(returns, 5) * 100:.2f}%")
+    c1.metric("📉 VaR 99% (1-day)", f"{np.percentile(returns, 1) * 100:.2f}%")
+    c2.metric("📊 Sharpe", f"{returns.mean() / returns.std() * np.sqrt(252):.2f}" if returns.std() else "n/a")
+    c3.metric("📉 Max Drawdown", f"{drawdown.min() * 100:.2f}%")
+    c4.metric("📈 Up Days", f"{(returns > 0).mean() * 100:.1f}%")
+
+    fig = go.Figure(go.Scatter(x=drawdown.index, y=drawdown * 100, fill='tozeroy', name='Drawdown',
+                               line=dict(color='tomato')))
+    fig.update_layout(title='Drawdown History', yaxis_title='Drawdown (%)', template=TEMPLATE, height=350)
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_predictions(a, params, cur):
+    results = a['results']
+    ranked = sorted(results, key=lambda n: results[n]['metrics']['test_r2'], reverse=True)
+    model_name = st.selectbox("Forecast model", ranked, key='model_choice',
+                              format_func=lambda n: f"{n} (test R² {results[n]['metrics']['test_r2']:.3f})"
+                              + ("  ← best" if n == a['best_name'] else ""))
+
+    with st.spinner(f"🔮 Forecasting {params['days']} business days (features recomputed each step)..."):
+        try:
+            pred = cached_forecast(params['symbol'], params['start'], params['end'],
+                                   params['use_synthetic'], params['days'], model_name)
+        except Exception as e:
+            st.error(f"Forecast failed: {e}")
             return
-        
-        st.markdown("### 📊 Returns Distribution")
-        
-        returns = self.df_raw['Close'].pct_change().dropna() * 100
-        
-        fig = px.histogram(
-            returns,
-            title='Daily Returns Distribution',
-            nbins=50,
-            color_discrete_sequence=['blue']
-        )
-        fig.add_vline(x=0, line_dash="dash", line_color="red")
-        fig.update_layout(
-            template='plotly_dark',
-            height=400,
-            showlegend=False
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Returns statistics
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Mean Return", f"{returns.mean():.3f}%")
-        with col2:
-            st.metric("Std Dev", f"{returns.std():.3f}%")
-        with col3:
-            st.metric("Sharpe Ratio", f"{returns.mean()/returns.std()*np.sqrt(252):.3f}")
-    
-    def render_risk_metrics(self):
-        """Render risk metrics"""
-        if self.df_raw is None or len(self.df_raw) < 2:
-            return
-        
-        st.markdown("### 📊 Risk Metrics")
-        
-        returns = self.df_raw['Close'].pct_change().dropna()
-        
-        # Calculate metrics
-        var_95 = np.percentile(returns, 5) * 100
-        var_99 = np.percentile(returns, 1) * 100
-        sharpe = (returns.mean() / returns.std()) * np.sqrt(252)
-        
-        cumulative = (1 + returns).cumprod()
-        running_max = cumulative.expanding().max()
-        drawdown = (cumulative - running_max) / running_max
-        max_drawdown = drawdown.min() * 100
-        win_rate = (returns > 0).mean() * 100
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("📉 VaR (95%)", f"{var_95:.2f}%")
-            st.metric("📉 VaR (99%)", f"{var_99:.2f}%")
-        
-        with col2:
-            st.metric("📊 Sharpe Ratio", f"{sharpe:.2f}")
-        
-        with col3:
-            st.metric("📉 Max Drawdown", f"{max_drawdown:.2f}%")
-        
-        with col4:
-            st.metric("📈 Win Rate", f"{win_rate:.1f}%")
-        
-        # Drawdown chart
-        fig = go.Figure()
-        fig.add_trace(
-            go.Scatter(
-                x=self.df_raw['Date'][1:],
-                y=drawdown * 100,
-                name='Drawdown',
-                fill='tozeroy',
-                line=dict(color='red')
-            )
-        )
-        fig.update_layout(
-            title='Drawdown History',
-            xaxis_title='Date',
-            yaxis_title='Drawdown (%)',
-            template='plotly_dark',
-            height=400
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    def render_feature_importance(self):
-        """Render feature importance"""
-        if self.results is None:
-            st.info("Train models first to see feature importance")
-            return
-        
-        best_name = max(self.results.keys(), key=lambda x: self.results[x]['metrics']['test_r2'])
-        
-        if hasattr(self.models[best_name], 'feature_importances_'):
-            importances = self.models[best_name].feature_importances_
-            X, y, feature_cols = prepare_features_target(self.df_processed)
-            
-            importance_df = pd.DataFrame({
-                'feature': feature_cols[:len(importances)],
-                'importance': importances
-            }).sort_values('importance', ascending=False)
-            
-            top_20 = importance_df.head(20)
-            
-            fig = go.Figure()
-            fig.add_trace(
-                go.Bar(
-                    x=top_20['importance'],
-                    y=top_20['feature'],
-                    orientation='h',
-                    marker_color='steelblue'
-                )
-            )
-            fig.update_layout(
-                title=f'Top 20 Feature Importances ({best_name})',
-                xaxis_title='Importance',
-                yaxis_title='Feature',
-                template='plotly_dark',
-                height=500,
-                yaxis=dict(autorange="reversed")
-            )
-            st.plotly_chart(fig, use_container_width=True)
-    
-    def render_data_tab(self):
-        """Render data tab"""
-        if self.df_raw is None:
-            return
-        
-        st.markdown("### 📊 Data Overview")
-        st.dataframe(
-            self.df_raw.tail(20).style.format({
-                'Open': '${:.2f}',
-                'High': '${:.2f}',
-                'Low': '${:.2f}',
-                'Close': '${:.2f}',
-                'Volume': '{:,.0f}'
-            }),
-            use_container_width=True
-        )
-        
-        csv = self.df_raw.to_csv(index=False)
-        st.download_button(
-            label="📥 Download Data as CSV",
-            data=csv,
-            file_name=f"{self.symbol}_data.csv",
-            mime="text/csv"
-        )
-    
-    def run(self):
-        """Main dashboard loop"""
-        st.markdown('<h1 class="main-header">📈 Stock Price Prediction Dashboard</h1>', unsafe_allow_html=True)
-        
-        config = self.render_sidebar()
-        
-        if config['process_btn']:
-            # Step 1: Load data
-            with st.spinner(f"Loading {config['symbol']} data..."):
-                success = self.load_data_with_date_range(
-                    config['symbol'],
-                    config['start_date'],
-                    config['end_date'],
-                    force_download=config['force_refresh'],
-                    use_synthetic=config['use_synthetic']
-                )
-            
-            if success:
-                st.success(f"✅ Data loaded successfully! ({len(self.df_raw)} days)")
-                
-                # Step 2: Train models
-                train_success = self.train_models_automatically()
-                if train_success:
-                    st.success(f"✅ Models trained successfully! Best: {self.best_model_name}")
-                    
-                    # Step 3: Generate predictions
-                    predictions = self.generate_predictions(config['prediction_days'])
-                    if predictions is not None:
-                        st.success(f"✅ Predictions generated for {len(predictions)} days!")
-                
-                # Step 4: Display ALL graphs
-                st.markdown("---")
-                self.render_metrics()
-                st.markdown("---")
-                
-                # ALL 6 GRAPHS
-                self.render_price_chart()
-                st.markdown("---")
-                
-                self.render_returns_distribution()
-                st.markdown("---")
-                
-                self.render_correlation_matrix()
-                st.markdown("---")
-                
-                self.render_risk_metrics()
-                st.markdown("---")
-                
-                # Tabs for additional content
-                tab1, tab2, tab3 = st.tabs(["📈 Predictions", "🔍 Feature Importance", "📋 Data"])
-                
-                with tab1:
-                    self.render_predictions()
-                
-                with tab2:
-                    self.render_feature_importance()
-                
-                with tab3:
-                    self.render_data_tab()
-                    
-            else:
-                st.error("❌ Failed to load data. Please try again.")
+
+    hist = a['raw_view'].tail(120)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=hist['Date'], y=hist['Close'], name='Historical', line=dict(color='#4f8bf9', width=2)))
+    fig.add_trace(go.Scatter(x=pred['Date'], y=pred['Upper_Bound'], mode='lines', line=dict(width=0),
+                             showlegend=False, hoverinfo='skip'))
+    fig.add_trace(go.Scatter(x=pred['Date'], y=pred['Lower_Bound'], mode='lines', line=dict(width=0),
+                             fill='tonexty', fillcolor='rgba(255,99,71,0.18)', name='95% band'))
+    # connect forecast to the last real close
+    fx = pd.concat([hist['Date'].tail(1), pred['Date']])
+    fy = pd.concat([hist['Close'].tail(1), pred['Predicted_Close']])
+    fig.add_trace(go.Scatter(x=fx, y=fy, name='Forecast', line=dict(color='tomato', width=2, dash='dash')))
+    fig.update_layout(title=f"{a['symbol']} forecast ({model_name})", yaxis_title=f'Price ({cur})',
+                      template=TEMPLATE, height=500, hovermode='x unified')
+
+    col1, col2 = st.columns([2, 1])
+    col1.plotly_chart(fig, use_container_width=True)
+
+    last_price = float(a['raw_full']['Close'].iloc[-1])
+    final = pred.iloc[-1]
+    exp_ret = (final['Predicted_Close'] / last_price - 1) * 100
+    band_pct = (final['Upper_Bound'] / final['Predicted_Close'] - 1) * 100
+    with col2:
+        st.markdown(f"""
+#### 📊 Forecast Summary
+| | |
+|---|---|
+| **Last close** | {cur}{last_price:.2f} |
+| **Forecast (day {len(pred)})** | {cur}{final['Predicted_Close']:.2f} |
+| **Expected move** | {exp_ret:+.2f}% |
+| **95% band** | {cur}{final['Lower_Bound']:.2f} – {cur}{final['Upper_Bound']:.2f} |
+""")
+        m = results[model_name]['metrics']
+        beats_baseline = a['baseline_rmse'] is not None and m['test_rmse'] < a['baseline_rmse']
+        if abs(exp_ret) < band_pct * 0.25 or not beats_baseline:
+            st.info(f"⚪ **Signal: Neutral** — the expected move ({exp_ret:+.2f}%) is small next to the "
+                    f"uncertainty (±{band_pct:.1f}%)" + ("" if beats_baseline else
+                                                         ", and this model does not beat the zero-change baseline"))
+        elif exp_ret > 0:
+            st.success(f"🟢 **Signal: Bullish** ({exp_ret:+.2f}%)")
         else:
-            st.info("👈 Select a stock, date range, and click 'Process & Analyze' to begin!")
-            
-            st.markdown("### 🚀 Features:")
-            st.markdown("""
-            - **Real-time Data Loading** from Yahoo Finance
-            - **Automatic Data Generation** if no data available
-            - **Multiple ML Models** (XGBoost, Random Forest, Linear Regression)
-            - **Interactive Charts** with Plotly
-            - **Risk Metrics & Analysis**
-            - **Feature Importance** visualization
-            - **Confidence Intervals** for predictions
-            - **Downloadable Data** in CSV format
-            """)
+            st.error(f"🔴 **Signal: Bearish** ({exp_ret:+.2f}%)")
+        st.caption("Educational project, not financial advice.")
+
+    st.download_button("📥 Download forecast CSV", pred.to_csv(index=False).encode(),
+                       file_name=f"{a['symbol']}_forecast_{model_name}.csv", mime="text/csv")
+
+
+def render_model_performance(a):
+    st.markdown("### 🧪 Model performance on the held-out last 20% (next-day return, %)")
+    comp = a['comparison'].copy()
+    st.dataframe(comp.style.format(precision=3), use_container_width=True, hide_index=True)
+    if a['baseline_rmse'] is not None:
+        best = a['results'][a['best_name']]['metrics']
+        edge = (1 - best['test_rmse'] / a['baseline_rmse']) * 100
+        st.markdown(f"**Zero-change baseline RMSE:** {a['baseline_rmse']:.3f}%  ·  "
+                    f"**Best model ({a['best_name']}):** {best['test_rmse']:.3f}%  ·  "
+                    f"**Improvement:** {edge:+.1f}%")
+        st.caption("Daily returns are close to random; R² near 0 and ~50% direction accuracy are normal. "
+                   "A model is only useful if it beats the baseline consistently.")
+
+
+def render_feature_importance(a):
+    imp = feature_importance(a, top_n=20)
+    if imp is None:
+        st.info("No tree-based model available for feature importance.")
+        return
+    fig = go.Figure(go.Bar(x=imp['importance'], y=imp['feature'], orientation='h', marker_color='steelblue'))
+    fig.update_layout(title=f"Top 20 features ({imp['model'].iloc[0]})", template=TEMPLATE, height=560,
+                      yaxis=dict(autorange="reversed"), xaxis_title='Relative importance')
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_data_tab(a, cur):
+    df = a['raw_view']
+    st.dataframe(df.tail(30).iloc[::-1].style.format({'Open': cur + '{:.2f}', 'High': cur + '{:.2f}',
+                                                      'Low': cur + '{:.2f}', 'Close': cur + '{:.2f}',
+                                                      'Volume': '{:,.0f}'}),
+                 use_container_width=True, hide_index=True)
+    st.download_button("📥 Download price data CSV", df.to_csv(index=False).encode(),
+                       file_name=f"{a['symbol']}_data.csv", mime="text/csv")
+
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
+def main():
+    st.markdown('<h1 class="main-header">📈 Stock Price Prediction Dashboard</h1>', unsafe_allow_html=True)
+    params = render_sidebar()
+
+    if not params:
+        st.info("👈 Choose a stock and date range, then click **Process & Analyze**.")
+        st.markdown("""
+### 🚀 Features
+- **Live data** from Yahoo Finance (synthetic fallback, clearly labelled)
+- **340+ engineered features**, leakage-checked
+- **8 ML models** compared against a zero-change baseline
+- **Recursive multi-day forecast** with a widening 95% band
+- **Risk metrics**, feature importance, CSV downloads
+""")
+        return
+
+    with st.spinner(f"🧠 Loading {params['symbol']} and training models (first run ~10-30s, then cached)..."):
+        try:
+            a = cached_analysis(params['symbol'], params['start'], params['end'], params['use_synthetic'])
+        except ValueError as e:
+            st.error(f"❌ {e}")
+            return
+        except Exception as e:
+            st.error(f"❌ Unexpected error: {e}")
+            st.exception(e)
+            return
+
+    cur = currency_for(a['symbol'])
+    render_source_banner(a)
+    st.markdown("---")
+    render_metrics(a['raw_view'], cur)
+    st.markdown("---")
+    render_price_chart(a['raw_view'])
+
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔮 Forecast", "🧪 Model Performance", "🔍 Feature Importance",
+                                            "📉 Risk & Returns", "📋 Data"])
+    with tab1:
+        render_predictions(a, params, cur)
+    with tab2:
+        render_model_performance(a)
+    with tab3:
+        render_feature_importance(a)
+    with tab4:
+        render_returns_distribution(a['raw_view'])
+        render_correlation_matrix(a['raw_view'])
+        render_risk_metrics(a['raw_view'])
+    with tab5:
+        render_data_tab(a, cur)
 
 
 if __name__ == "__main__":
-    dashboard = StockDashboard()
-    dashboard.run()
+    main()

@@ -1,5 +1,16 @@
 """
-Model training module for stock price prediction - FIXED for memory issues
+Model training module for stock price prediction - FIXED
+
+Key fixes vs previous version:
+  * Default target is now the next-day RETURN (%) instead of the raw price level.
+    Tree models (XGBoost/LightGBM/RF/GB) cannot extrapolate beyond prices seen in
+    training, so on a time-based split they produced the negative test R² seen in the README.
+  * SVR was trained on scaled data but evaluated/predicted on UNSCALED data -> fixed with
+    a Pipeline(StandardScaler, SVR). Linear models also get a scaler.
+  * Rows whose target is NaN (the most recent days) are excluded from training only.
+  * Feature list comes from one shared function (old `not col.endswith('d')` filter also
+    silently dropped real features like 'is_month_end').
+  * Directional accuracy added to the metrics.
 """
 import pandas as pd
 import numpy as np
@@ -7,403 +18,324 @@ import os
 import sys
 import warnings
 from typing import Dict, Any, Optional, List, Tuple
-from datetime import datetime
 warnings.filterwarnings('ignore')
 
 from sklearn.model_selection import TimeSeriesSplit, cross_val_score
 from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.svm import SVR
-from xgboost import XGBRegressor
-from lightgbm import LGBMRegressor
+from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
-import joblib
+from xgboost import XGBRegressor
+from lightgbm import LGBMRegressor
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils.config import (
-    MODELS_DIR, 
-    DATA_PROCESSED_DIR, 
+    MODELS_DIR,
+    DATA_PROCESSED_DIR,
     STOCK_SYMBOL,
     TEST_SIZE,
     RANDOM_STATE,
     XGB_PARAMS,
     LGBM_PARAMS,
-    RF_PARAMS,
     TIME_SERIES_SPLIT
 )
 from utils.helpers import print_section, save_model, save_metrics, Timer
 
+try:
+    from src.preprocess import get_feature_columns
+except ImportError:  # when run from inside src/
+    from preprocess import get_feature_columns
+
+DEFAULT_TARGET = 'target_return_1d'
+
+
+def is_return_target(target_col: str) -> bool:
+    return 'return' in target_col
+
 
 class ModelTrainer:
     """
-    Advanced model training with cross-validation and hyperparameter tuning
+    Model training with time-series cross-validation
     """
-    
-    def __init__(self, X_train, y_train, X_test, y_test, feature_cols=None):
+
+    def __init__(self, X_train, y_train, X_test, y_test, feature_cols=None,
+                 target_col: str = DEFAULT_TARGET, run_cv: bool = True, verbose: bool = True):
         self.X_train = X_train
         self.y_train = y_train
         self.X_test = X_test
         self.y_test = y_test
         self.feature_cols = feature_cols
+        self.target_col = target_col
+        self.run_cv = run_cv
+        self.verbose = verbose
         self.models = {}
         self.results = {}
-        
-    def prepare_features_target(self, df, feature_cols=None, target_col='target_1d'):
-        """
-        Prepare features and target for training - FIXED to handle multiple target columns
-        """
-        if feature_cols is None:
-            exclude_cols = ['Date', 'target_class']
-            target_cols = [col for col in df.columns if col.startswith('target_')]
-            exclude_cols.extend(target_cols)
-            
-            feature_cols = [col for col in df.columns if col not in exclude_cols]
-            feature_cols = [col for col in feature_cols if not col.endswith('d')]
-        
+
+    def _log(self, msg=""):
+        if self.verbose:
+            print(msg)
+
+    def prepare_features_target(self, df, feature_cols=None, target_col=DEFAULT_TARGET):
+        """Prepare features and target; drops rows where the target is unknown."""
         if target_col not in df.columns:
-            target_cols = [col for col in df.columns if col.startswith('target_') and col.endswith('d')]
-            if target_cols:
-                target_col = target_cols[0]
-                print(f"📌 Using target column: {target_col}")
-            else:
+            # Legacy callers passed 'target' -> map to the 1-day return target
+            fallback = [DEFAULT_TARGET, 'target_1d', 'target']
+            target_col = next((c for c in fallback if c in df.columns), None)
+            if target_col is None:
                 raise KeyError(f"No target column found. Available columns: {list(df.columns)}")
-        
-        X = df[feature_cols]
-        y = df[target_col]
-        
-        print(f"📊 Features shape: {X.shape}")
-        print(f"🎯 Target shape: {y.shape}")
-        print(f"📝 Number of features: {len(feature_cols)}")
-        
+            self._log(f"📌 Using target column: {target_col}")
+
+        if feature_cols is None:
+            feature_cols = get_feature_columns(df)
+
+        train_df = df.dropna(subset=[target_col])
+        X = train_df[feature_cols]
+        y = train_df[target_col]
+
+        self._log(f"📊 Features shape: {X.shape}")
+        self._log(f"🎯 Target: {target_col}  shape: {y.shape}")
+
+        self.target_col = target_col
         return X, y, feature_cols
-    
+
+    def _fit(self, name, model):
+        with Timer(name) if self.verbose else _NullCtx():
+            model.fit(self.X_train, self.y_train)
+        self.models[name] = model
+
     def train_linear_models(self) -> 'ModelTrainer':
-        """Train linear models"""
-        print_section("Training Linear Models")
-        
-        print("\n📊 Training Linear Regression...")
-        with Timer("Linear Regression"):
-            lr = LinearRegression()
-            lr.fit(self.X_train, self.y_train)
-            self.models['linear_regression'] = lr
-        
-        print("\n📊 Training Ridge Regression...")
-        with Timer("Ridge Regression"):
-            ridge = Ridge(alpha=1.0)
-            ridge.fit(self.X_train, self.y_train)
-            self.models['ridge'] = ridge
-        
-        print("\n📊 Training Lasso Regression...")
-        with Timer("Lasso Regression"):
-            lasso = Lasso(alpha=0.1)
-            lasso.fit(self.X_train, self.y_train)
-            self.models['lasso'] = lasso
-        
-        print("\n📊 Training ElasticNet...")
-        with Timer("ElasticNet"):
-            elastic = ElasticNet(alpha=0.1, l1_ratio=0.5)
-            elastic.fit(self.X_train, self.y_train)
-            self.models['elasticnet'] = elastic
-        
+        if self.verbose:
+            print_section("Training Linear Models")
+        # Plain LinearRegression is NOT trained here: with ~340 highly collinear features it is
+        # numerically unstable (test R² in the -1000s). Ridge/Lasso/ElasticNet cover linear models.
+        self._fit('ridge', make_pipeline(StandardScaler(), Ridge(alpha=10.0)))
+        self._fit('lasso', make_pipeline(StandardScaler(), Lasso(alpha=0.01, max_iter=5000)))
+        self._fit('elasticnet', make_pipeline(StandardScaler(), ElasticNet(alpha=0.01, l1_ratio=0.5, max_iter=5000)))
         return self
-    
+
     def train_tree_models(self) -> 'ModelTrainer':
-        """Train tree-based models with memory optimization"""
-        print_section("Training Tree-Based Models")
-        
-        # Random Forest - Memory optimized
-        print("\n📊 Training Random Forest...")
-        with Timer("Random Forest"):
-            rf = RandomForestRegressor(
-                n_estimators=50,  # Reduced for memory
-                max_depth=8,
-                min_samples_split=10,
-                min_samples_leaf=5,
-                random_state=RANDOM_STATE,
-                n_jobs=1  # Single core to avoid memory issues
-            )
-            rf.fit(self.X_train, self.y_train)
-            self.models['random_forest'] = rf
-        
-        # Gradient Boosting
-        print("\n📊 Training Gradient Boosting...")
-        with Timer("Gradient Boosting"):
-            gb = GradientBoostingRegressor(
-                n_estimators=100,  # Reduced
-                max_depth=4,
-                learning_rate=0.05,
-                random_state=RANDOM_STATE
-            )
-            gb.fit(self.X_train, self.y_train)
-            self.models['gradient_boosting'] = gb
-        
-        # XGBoost - Memory optimized
-        print("\n📊 Training XGBoost...")
-        with Timer("XGBoost"):
-            xgb_params = XGB_PARAMS.copy()
-            xgb_params['n_estimators'] = 100  # Reduced
-            xgb_params['max_depth'] = 5
-            xgb_params['n_jobs'] = 1
-            xgb = XGBRegressor(**xgb_params)
-            xgb.fit(self.X_train, self.y_train)
-            self.models['xgboost'] = xgb
-        
-        # LightGBM
-        print("\n📊 Training LightGBM...")
-        with Timer("LightGBM"):
-            lgbm_params = LGBM_PARAMS.copy()
-            lgbm_params['n_estimators'] = 100  # Reduced
-            lgbm_params['max_depth'] = 5
-            lgbm_params['n_jobs'] = 1
-            lgbm = LGBMRegressor(**lgbm_params)
-            lgbm.fit(self.X_train, self.y_train)
-            self.models['lightgbm'] = lgbm
-        
+        if self.verbose:
+            print_section("Training Tree-Based Models")
+
+        self._fit('random_forest', RandomForestRegressor(
+            n_estimators=50, max_depth=8, min_samples_split=10, min_samples_leaf=5,
+            random_state=RANDOM_STATE, n_jobs=1
+        ))
+
+        self._fit('gradient_boosting', GradientBoostingRegressor(
+            n_estimators=100, max_depth=3, learning_rate=0.05, subsample=0.8, random_state=RANDOM_STATE
+        ))
+
+        xgb_params = dict(XGB_PARAMS)
+        xgb_params.update({'n_estimators': 100, 'max_depth': 4, 'n_jobs': 1})
+        xgb_params.setdefault('random_state', RANDOM_STATE)
+        self._fit('xgboost', XGBRegressor(**xgb_params))
+
+        lgbm_params = dict(LGBM_PARAMS)
+        lgbm_params.update({'n_estimators': 100, 'max_depth': 4, 'n_jobs': 1, 'verbose': -1})
+        lgbm_params.setdefault('random_state', RANDOM_STATE)
+        self._fit('lightgbm', LGBMRegressor(**lgbm_params))
         return self
-    
+
     def train_svm(self) -> 'ModelTrainer':
-        """Train SVM"""
-        print_section("Training SVM")
-        
-        # Scale data for SVM
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(self.X_train)
-        
-        print("\n📊 Training SVR...")
-        with Timer("SVR"):
-            svr = SVR(kernel='rbf', C=10, gamma=0.1, epsilon=0.1)  # Reduced C
-            svr.fit(X_train_scaled, self.y_train)
-            self.models['svr'] = svr
-            self.scaler = scaler
-        
+        if self.verbose:
+            print_section("Training SVM")
+        # FIX: scaler lives inside the pipeline, so predict() on raw features works
+        self._fit('svr', make_pipeline(StandardScaler(), SVR(kernel='rbf', C=1.0, gamma='scale', epsilon=0.1)))
         return self
-    
+
     def evaluate_model(self, model, model_name):
-        """Evaluate a single model - FIXED for memory issues"""
-        # Predictions
+        """Evaluate a single model"""
         y_train_pred = model.predict(self.X_train)
         y_test_pred = model.predict(self.X_test)
-        
-        # Calculate metrics
+        y_test = np.asarray(self.y_test)
+
         metrics = {
             'train_r2': r2_score(self.y_train, y_train_pred),
-            'test_r2': r2_score(self.y_test, y_test_pred),
+            'test_r2': r2_score(y_test, y_test_pred),
             'train_rmse': np.sqrt(mean_squared_error(self.y_train, y_train_pred)),
-            'test_rmse': np.sqrt(mean_squared_error(self.y_test, y_test_pred)),
+            'test_rmse': np.sqrt(mean_squared_error(y_test, y_test_pred)),
             'train_mae': mean_absolute_error(self.y_train, y_train_pred),
-            'test_mae': mean_absolute_error(self.y_test, y_test_pred)
+            'test_mae': mean_absolute_error(y_test, y_test_pred),
         }
-        
-        # Cross-validation - FIXED: use n_jobs=1 to avoid memory issues
-        if TIME_SERIES_SPLIT:
+
+        if is_return_target(self.target_col):
+            metrics['test_dir_acc'] = float(np.mean(np.sign(y_test_pred) == np.sign(y_test)) * 100)
+            metrics['test_residual_std'] = float(np.std(y_test - y_test_pred))
+
+        if TIME_SERIES_SPLIT and self.run_cv:
             try:
-                tscv = TimeSeriesSplit(n_splits=3)  # Reduced from 5 to 3
                 cv_scores = cross_val_score(
                     model, self.X_train, self.y_train,
-                    cv=tscv, scoring='r2', 
-                    n_jobs=1,  # Use single core to avoid memory issues
-                    error_score='raise'
+                    cv=TimeSeriesSplit(n_splits=3), scoring='r2', n_jobs=1, error_score='raise'
                 )
                 metrics['cv_r2_mean'] = cv_scores.mean()
                 metrics['cv_r2_std'] = cv_scores.std()
             except Exception as e:
-                print(f"   ⚠️  Cross-validation skipped: {str(e)[:100]}")
+                self._log(f"   ⚠️  Cross-validation skipped: {str(e)[:100]}")
                 metrics['cv_r2_mean'] = np.nan
                 metrics['cv_r2_std'] = np.nan
-        
+
         self.results[model_name] = {
             'metrics': metrics,
-            'predictions': {
-                'train': y_train_pred,
-                'test': y_test_pred
-            },
+            'predictions': {'train': y_train_pred, 'test': y_test_pred},
             'model': model
         }
-        
         return metrics
-    
+
     def train_and_evaluate_all(self, save_models=True) -> Dict:
         """Train and evaluate all models"""
-        print_section("Training All Models")
-        
-        # Train linear models
+        if self.verbose:
+            print_section("Training All Models")
+
         self.train_linear_models()
-        
-        # Train tree models
         self.train_tree_models()
-        
-        # Train SVM
         self.train_svm()
-        
-        # Evaluate all models
-        print("\n" + "="*70)
-        print("  MODEL EVALUATION RESULTS")
-        print("="*70)
-        
+
+        unit = '%' if is_return_target(self.target_col) else '$'
+        self._log("\n" + "=" * 70 + "\n  MODEL EVALUATION RESULTS\n" + "=" * 70)
+
         for name, model in self.models.items():
-            print(f"\n📊 {name.replace('_', ' ').title()}:")
             metrics = self.evaluate_model(model, name)
-            
-            print(f"   Train R²: {metrics['train_r2']:.4f}")
-            print(f"   Test R²:  {metrics['test_r2']:.4f}")
-            print(f"   Train RMSE: ${metrics['train_rmse']:.2f}")
-            print(f"   Test RMSE:  ${metrics['test_rmse']:.2f}")
-            if 'cv_r2_mean' in metrics and not np.isnan(metrics['cv_r2_mean']):
-                print(f"   CV R²:    {metrics['cv_r2_mean']:.4f} (±{metrics['cv_r2_std']:.4f})")
-            
-            # Save model
+            self._log(f"\n📊 {name.replace('_', ' ').title()}:")
+            self._log(f"   Train R²: {metrics['train_r2']:.4f}")
+            self._log(f"   Test R²:  {metrics['test_r2']:.4f}")
+            self._log(f"   Test RMSE: {metrics['test_rmse']:.4f} {unit}")
+            if 'test_dir_acc' in metrics:
+                self._log(f"   Test directional accuracy: {metrics['test_dir_acc']:.1f}%")
+            if not np.isnan(metrics.get('cv_r2_mean', np.nan)):
+                self._log(f"   CV R²:    {metrics['cv_r2_mean']:.4f} (±{metrics['cv_r2_std']:.4f})")
+
             if save_models:
                 save_model(model, name, MODELS_DIR)
                 save_metrics(metrics, f"{name}_metrics", MODELS_DIR)
-        
-        # Create comparison table
-        comparison = self.create_comparison_table()
-        print("\n" + "="*70)
-        print("  MODEL COMPARISON (Sorted by Test R²)")
-        print("="*70)
-        print(comparison.to_string(index=False))
-        
+
+        if self.verbose:
+            print("\n" + "=" * 70 + "\n  MODEL COMPARISON (Sorted by Test R²)\n" + "=" * 70)
+            print(self.create_comparison_table().to_string(index=False))
+
         return self.results
-    
+
     def create_comparison_table(self) -> pd.DataFrame:
-        """Create comparison table of all models"""
-        comparison_data = []
-        
+        rows = []
         for name, result in self.results.items():
-            metrics = result['metrics']
+            m = result['metrics']
             row = {
                 'Model': name.replace('_', ' ').title(),
-                'Train R²': metrics['train_r2'],
-                'Test R²': metrics['test_r2'],
-                'Train RMSE': metrics['train_rmse'],
-                'Test RMSE': metrics['test_rmse'],
-                'Train MAE': metrics['train_mae'],
-                'Test MAE': metrics['test_mae']
+                'Train R²': m['train_r2'],
+                'Test R²': m['test_r2'],
+                'Train RMSE': m['train_rmse'],
+                'Test RMSE': m['test_rmse'],
+                'Test MAE': m['test_mae'],
             }
-            if 'cv_r2_mean' in metrics and not np.isnan(metrics['cv_r2_mean']):
-                row['CV R²'] = metrics['cv_r2_mean']
-            comparison_data.append(row)
-        
-        df = pd.DataFrame(comparison_data)
-        df = df.sort_values('Test R²', ascending=False)
-        
-        return df
-    
-    def get_feature_importance(self, model_name='xgboost', top_n=20) -> pd.DataFrame:
-        """Get feature importance from a tree-based model"""
+            if 'test_dir_acc' in m:
+                row['Dir. Acc %'] = m['test_dir_acc']
+            if not np.isnan(m.get('cv_r2_mean', np.nan)):
+                row['CV R²'] = m['cv_r2_mean']
+            rows.append(row)
+        return pd.DataFrame(rows).sort_values('Test R²', ascending=False)
+
+    def get_feature_importance(self, model_name='xgboost', top_n=20) -> Optional[pd.DataFrame]:
         if model_name not in self.models:
             raise ValueError(f"Model '{model_name}' not found")
-        
         model = self.models[model_name]
-        
         if not hasattr(model, 'feature_importances_'):
-            print(f"⚠️  Model '{model_name}' does not have feature_importances_")
+            self._log(f"⚠️  Model '{model_name}' does not have feature_importances_")
             return None
-        
         importance_df = pd.DataFrame({
             'feature': self.feature_cols,
             'importance': model.feature_importances_
         }).sort_values('importance', ascending=False)
-        
-        print(f"\n🔝 Top {top_n} Important Features ({model_name}):")
-        print(importance_df.head(top_n).to_string(index=False))
-        
+        self._log(f"\n🔝 Top {top_n} Important Features ({model_name}):")
+        self._log(importance_df.head(top_n).to_string(index=False))
         return importance_df
-    
+
     def get_best_model(self) -> Tuple[Any, str]:
-        """Get the best performing model"""
-        best_name = None
-        best_score = -np.inf
-        
-        for name, result in self.results.items():
-            score = result['metrics']['test_r2']
-            if score > best_score:
-                best_score = score
-                best_name = name
-        
+        best_name = max(self.results, key=lambda n: self.results[n]['metrics']['test_r2'])
         return self.models[best_name], best_name
 
 
+class _NullCtx:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
 # ============================================================================
-# LEGACY SUPPORT FUNCTIONS - FIXED
+# LEGACY SUPPORT FUNCTIONS
 # ============================================================================
 
-def prepare_features_target(df, feature_cols=None, target_col='target_1d'):
-    """Legacy function for backward compatibility - FIXED"""
-    trainer = ModelTrainer(None, None, None, None)
+def prepare_features_target(df, feature_cols=None, target_col=DEFAULT_TARGET, verbose=True):
+    trainer = ModelTrainer(None, None, None, None, verbose=verbose)
     return trainer.prepare_features_target(df, feature_cols, target_col)
 
 
 def split_data(X, y, test_size=TEST_SIZE, random_state=RANDOM_STATE):
-    """Legacy split function with time series support"""
-    if TIME_SERIES_SPLIT:
-        split_idx = int(len(X) * (1 - test_size))
-        X_train, X_test = X[:split_idx], X[split_idx:]
-        y_train, y_test = y[:split_idx], y[split_idx:]
-    else:
-        from sklearn.model_selection import train_test_split
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=random_state, shuffle=False
-        )
-    
-    return X_train, X_test, y_train, y_test
+    """Chronological split (never shuffle time series)"""
+    split_idx = int(len(X) * (1 - test_size))
+    return X.iloc[:split_idx], X.iloc[split_idx:], y.iloc[:split_idx], y.iloc[split_idx:]
 
 
 def train_all_models(X_train, y_train, save_models=True):
-    """Legacy function for backward compatibility"""
     trainer = ModelTrainer(X_train, y_train, None, None)
-    
     trainer.train_linear_models()
     trainer.train_tree_models()
     trainer.train_svm()
-    
     if save_models:
         for name, model in trainer.models.items():
             save_model(model, name, MODELS_DIR)
-    
     return trainer.models
 
 
+def train_linear_regression(X_train, y_train):
+    """Scaled linear regression (used by tests / notebooks)"""
+    return make_pipeline(StandardScaler(), LinearRegression()).fit(X_train, y_train)
+
+
+def train_random_forest(X_train, y_train, n_estimators=50, **kwargs):
+    params = dict(n_estimators=n_estimators, max_depth=8, min_samples_leaf=5,
+                  random_state=RANDOM_STATE, n_jobs=1)
+    params.update(kwargs)
+    return RandomForestRegressor(**params).fit(X_train, y_train)
+
+
+def train_xgboost(X_train, y_train, params=None):
+    xgb_params = dict(XGB_PARAMS)
+    xgb_params.update(params or {})
+    return XGBRegressor(**xgb_params).fit(X_train, y_train)
+
+
 def get_feature_importance(model, feature_cols, top_n=10):
-    """Legacy function for backward compatibility"""
     if hasattr(model, 'feature_importances_'):
         importance_df = pd.DataFrame({
             'feature': feature_cols,
             'importance': model.feature_importances_
         }).sort_values('importance', ascending=False)
-        
         print(f"\n🔝 Top {top_n} Important Features:")
         print(importance_df.head(top_n).to_string(index=False))
-        
         return importance_df
-    else:
-        print("⚠️  Model does not have feature_importances_ attribute")
-        return None
+    print("⚠️  Model does not have feature_importances_ attribute")
+    return None
 
 
 if __name__ == "__main__":
-    print("Testing Enhanced Model Training...")
-    
+    print("Testing Model Training...")
     filepath = os.path.join(DATA_PROCESSED_DIR, f"{STOCK_SYMBOL}_processed.csv")
-    
+
     if os.path.exists(filepath):
-        print(f"📂 Loading data from: {filepath}")
         df = pd.read_csv(filepath)
-        
-        X, y, feature_cols = prepare_features_target(df, target_col='target_1d')
+        X, y, feature_cols = prepare_features_target(df)
         X_train, X_test, y_train, y_test = split_data(X, y)
-        
-        print(f"Training set: {X_train.shape}")
-        print(f"Test set: {X_test.shape}")
-        
+        print(f"Training set: {X_train.shape}  Test set: {X_test.shape}")
+
         trainer = ModelTrainer(X_train, y_train, X_test, y_test, feature_cols)
-        results = trainer.train_and_evaluate_all(save_models=True)
-        
+        trainer.train_and_evaluate_all(save_models=True)
         trainer.get_feature_importance('xgboost', top_n=20)
-        
-        best_model, best_name = trainer.get_best_model()
+        _, best_name = trainer.get_best_model()
         print(f"\n🏆 Best Model: {best_name}")
-        
     else:
         print(f"❌ Processed data not found at: {filepath}")

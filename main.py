@@ -1,28 +1,34 @@
 """
-Main pipeline for Stock Price Prediction - Fully Automated
-Run this file to execute the complete workflow with automatic data generation
+Main pipeline for Stock Price Prediction - FIXED
+
+Fixes vs previous version:
+  * ensure_data_exists() generated SYNTHETIC data whenever no CSV existed - before even
+    trying Yahoo - and saved it as the real cache. First runs always trained on fake data.
+  * --start-date / --end-date were accepted but ignored (load_stock_data never used them).
+  * Training used target_col='target' (doesn't exist) and relied on a fallback; prediction
+    then reloaded 'xgboost' from disk instead of using the best model just trained.
+  * Hard-coded 'data/raw' paths ignored config.DATA_RAW_DIR (broke when run from another cwd).
+  * Not enough data -> generated fallback data, then re-downloaded the SAME symbol with
+    force_download=True (which overwrote the fallback). Now a clear error is raised.
+  * Now shares src/pipeline.py with the dashboard, so both behave identically.
 """
 import argparse
 import os
 import sys
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 import warnings
 warnings.filterwarnings('ignore')
 
-# Add src to path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+ROOT = os.path.dirname(os.path.abspath(__file__))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-from utils.config import STOCK_SYMBOL, START_DATE, END_DATE, DAYS, LOGS_DIR
-from utils.helpers import print_section, Timer
-from src.data_loader import StockDataLoader, load_stock_data
-from src.preprocess import StockDataPreprocessor, preprocess_data
-from src.train_model import ModelTrainer, prepare_features_target, split_data
-from src.evaluate import AdvancedEvaluator
-from src.predict import PredictionEngine, make_predictions
-from src.visualization import StockVisualizer, create_dashboard
+from utils.config import STOCK_SYMBOL, START_DATE, END_DATE, LOGS_DIR, DATA_PROCESSED_DIR, MODELS_DIR
+from utils.helpers import print_section, save_model, save_metrics
+from src.pipeline import run_analysis, forecast, feature_importance
+from src.predict import PredictionEngine
 
-# Setup logging
 os.makedirs(LOGS_DIR, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
@@ -36,248 +42,78 @@ logger = logging.getLogger(__name__)
 
 
 class AutomatedStockPipeline:
-    """
-    Fully automated pipeline with automatic data generation
-    """
-    
-    def __init__(self, symbol=STOCK_SYMBOL, start_date=START_DATE, end_date=END_DATE):
-        self.symbol = symbol
+    """CLI wrapper around src.pipeline (data -> train -> predict -> save)"""
+
+    def __init__(self, symbol=STOCK_SYMBOL, start_date=START_DATE, end_date=END_DATE, use_synthetic=False):
+        self.symbol = symbol.upper()
         self.start_date = start_date
         self.end_date = end_date
-        self.df_raw = None
-        self.df_processed = None
-        self.models = None
-        self.results = None
+        self.use_synthetic = use_synthetic
+        self.analysis = None
         self.predictions = None
-        self.days_of_data = DAYS
-        
-    def ensure_data_exists(self, force_download=False):
-        """
-        Ensure data exists - if not, generate synthetic data automatically
-        """
-        print_section("📊 DATA AVAILABILITY CHECK")
-        
-        filepath = os.path.join('data', 'raw', f"{self.symbol}_raw.csv")
-        
-        # Check if data exists
-        data_exists = os.path.exists(filepath)
-        
-        if data_exists and not force_download:
-            print(f"✅ Data exists for {self.symbol}")
-            return True
-        
-        print(f"⚠️  No data found for {self.symbol} or force_download=True")
-        print(f"🔄 Generating synthetic data automatically...")
-        
-        # Import and run create_enough_data
-        try:
-            from create_enough_data import StockDataGenerator
-            
-            # Generate synthetic data
-            generator = StockDataGenerator(symbol=self.symbol, days=self.days_of_data)
-            df = generator.create_working_dataset()
-            generator.save_dataset(df)
-            
-            print(f"✅ Synthetic data generated successfully!")
-            return True
-            
-        except ImportError:
-            print("⚠️  Could not import StockDataGenerator. Using fallback...")
-            # Fallback: Simple data generation
-            self._generate_fallback_data()
-            return True
-        except Exception as e:
-            print(f"❌ Error generating data: {e}")
-            return False
-    
-    def _generate_fallback_data(self):
-        """Fallback data generation if module not available"""
-        import pandas as pd
-        import numpy as np
-        from datetime import datetime, timedelta
-        
-        print("📊 Generating fallback data...")
-        
-        # Create date range
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=self.days_of_data)
-        dates = pd.date_range(start=start_date, end=end_date, freq='B')
-        
-        n = len(dates)
-        np.random.seed(42)
-        
-        # Generate realistic price data
-        base_price = 150
-        returns = np.random.normal(0.0005, 0.02, n)
-        prices = base_price * np.exp(np.cumsum(returns))
-        trend = np.linspace(0, 50, n)
-        prices += trend
-        prices = np.maximum(prices, 10)
-        
-        df = pd.DataFrame({
-            'Date': dates,
-            'Open': prices * (1 + np.random.uniform(-0.005, 0.005, n)),
-            'High': prices * (1 + np.random.uniform(0.01, 0.025, n)),
-            'Low': prices * (1 - np.random.uniform(0.01, 0.025, n)),
-            'Close': prices,
-            'Adj Close': prices,
-            'Volume': np.random.randint(1000000, 50000000, n)
-        })
-        
-        # Ensure High >= Low
-        df['High'] = df[['Open', 'High', 'Close']].max(axis=1) * 1.001
-        df['Low'] = df[['Open', 'Low', 'Close']].min(axis=1) * 0.999
-        
-        # Save
-        os.makedirs('data/raw', exist_ok=True)
-        file_path = f"data/raw/{self.symbol}_raw.csv"
-        df.to_csv(file_path, index=False)
-        
-        print(f"✅ Fallback data saved to: {file_path}")
-        return df
-    
-    def run_data_pipeline(self, force_download=False):
-        """Run data loading and preprocessing"""
-        print_section("📊 DATA PIPELINE")
-        
-        # Ensure data exists
-        if not self.ensure_data_exists(force_download):
-            logger.error("Failed to ensure data exists")
-            return False
-        
-        # Load data
-        print("\n1️⃣ Loading Stock Data")
-        with Timer("Data Loading"):
-            self.df_raw = load_stock_data(self.symbol, force_download=force_download)
-        
-        if self.df_raw is None:
-            logger.error("Failed to load data")
-            return False
-        
-        # Show data info
-        loader = StockDataLoader()
-        loader.get_data_info(self.df_raw)
-        
-        # Check data sufficiency
-        if len(self.df_raw) < 30:
-            logger.warning("Insufficient data. Generating more...")
-            self._generate_fallback_data()
-            self.df_raw = load_stock_data(self.symbol, force_download=True)
-        
-        # Preprocess data
-        print("\n2️⃣ Preprocessing Data")
-        with Timer("Preprocessing"):
-            self.df_processed = preprocess_data(self.df_raw, save=True, scale=False)
-        
-        print(f"   Final shape: {self.df_processed.shape}")
-        print(f"   Features: {len(self.df_processed.columns)} columns")
-        
+
+    def run_training(self, run_cv=True):
+        print_section("📊 DATA + 🤖 TRAINING PIPELINE")
+        self.analysis = run_analysis(self.symbol, self.start_date, self.end_date,
+                                     use_synthetic=self.use_synthetic, run_cv=run_cv, verbose=True)
+        a = self.analysis
+        print(f"\n📡 Data source: {a['source'].upper()}  |  rows: {len(a['raw_view'])}  "
+              f"|  features: {len(a['feature_cols'])}")
+        if a['source'] == 'synthetic':
+            logger.warning("⚠️  Using SYNTHETIC data - results say nothing about the real stock.")
+
+        os.makedirs(DATA_PROCESSED_DIR, exist_ok=True)
+        a['processed'].to_csv(os.path.join(DATA_PROCESSED_DIR, f"{self.symbol}_processed.csv"), index=False)
+
+        best = a['best_name']
+        for name, model in a['models'].items():
+            save_model(model, name, MODELS_DIR)
+            save_metrics(a['results'][name]['metrics'], f"{name}_metrics", MODELS_DIR)
+
+        print(f"\n🏆 Best model: {best}  (test R² {a['results'][best]['metrics']['test_r2']:.4f})")
+        if a['baseline_rmse'] is not None:
+            print(f"   Zero-return baseline RMSE: {a['baseline_rmse']:.4f}%  vs  "
+                  f"best model: {a['results'][best]['metrics']['test_rmse']:.4f}%")
+
+        imp = feature_importance(a, top_n=15)
+        if imp is not None:
+            print(f"\n🔝 Top features ({imp['model'].iloc[0]}):")
+            print(imp[['feature', 'importance']].to_string(index=False))
         return True
-    
-    def run_training_pipeline(self, target_col='target'):
-        """Run model training"""
-        print_section("🤖 TRAINING PIPELINE")
-        
-        if self.df_processed is None:
-            logger.error("No processed data available")
-            return False
-        
-        # Prepare features and target
-        print("\n1️⃣ Preparing Features and Target")
-        X, y, feature_cols = prepare_features_target(self.df_processed, target_col=target_col)
-        
-        # Split data
-        print("\n2️⃣ Splitting Data")
-        X_train, X_test, y_train, y_test = split_data(X, y)
-        
-        print(f"   Training set: {X_train.shape}")
-        print(f"   Test set: {X_test.shape}")
-        print(f"   Features: {len(feature_cols)}")
-        
-        # Train models
-        print("\n3️⃣ Training Models")
-        trainer = ModelTrainer(X_train, y_train, X_test, y_test, feature_cols)
-        self.results = trainer.train_and_evaluate_all(save_models=True)
-        self.models = trainer.models
-        
-        # Get feature importance
-        print("\n4️⃣ Feature Importance Analysis")
-        importance_df = trainer.get_feature_importance('xgboost', top_n=20)
-        
-        # Get best model
-        best_model, best_name = trainer.get_best_model()
-        logger.info(f"🏆 Best Model: {best_name}")
-        logger.info(f"   Test R²: {trainer.results[best_name]['metrics']['test_r2']:.4f}")
-        
-        return True
-    
-    def run_prediction_pipeline(self, days=30, model_name='xgboost'):
-        """Run prediction pipeline"""
+
+    def run_prediction(self, days=30, model_name=None, save=True):
         print_section("🔮 PREDICTION PIPELINE")
-        
-        if self.df_processed is None:
-            logger.error("No processed data available")
-            return False
-        
-        # Make predictions
-        print(f"\n🔮 Predicting next {days} days...")
-        self.predictions = make_predictions(
-            model_name=model_name,
-            prediction_days=days,
-            save=True
-        )
-        
+        self.predictions = forecast(self.analysis, days=days, model_name=model_name)
+
+        name = model_name or self.analysis['best_name']
+        engine = PredictionEngine(model_name=name, model=self.analysis['models'][name],
+                                  target_col=self.analysis['target_col'], symbol=self.symbol)
+        engine.last_close = float(self.analysis['raw_full']['Close'].iloc[-1])
+        print("\n" + engine.generate_report(self.predictions))
+        if save:
+            engine.save_predictions(self.predictions)
         return True
-    
-    def run_full_pipeline(self, force_download=False, predict_days=30):
-        """Run complete pipeline automatically"""
-        print("="*80)
-        print(" "*20 + "🚀 AUTOMATED STOCK PREDICTION PIPELINE")
-        print(" "*30 + f"Symbol: {self.symbol}")
-        print(" "*25 + f"Date Range: {self.start_date} to {self.end_date}")
-        print("="*80)
-        
-        start_time = datetime.now()
-        
+
+    def run_full_pipeline(self, predict_days=30, model_name=None, run_cv=True):
+        print("=" * 80)
+        print(f"🚀 AUTOMATED STOCK PREDICTION PIPELINE | {self.symbol} | {self.start_date} → {self.end_date}")
+        print("=" * 80)
+        started = datetime.now()
         try:
-            # Data pipeline (with automatic data generation)
-            if not self.run_data_pipeline(force_download=force_download):
-                return False
-            
-            # Training pipeline
-            if not self.run_training_pipeline():
-                return False
-            
-            # Prediction pipeline
-            if not self.run_prediction_pipeline(days=predict_days):
-                return False
-            
-            # Visualizations will be generated by dashboard
-            print_section("📊 VISUALIZATIONS READY")
-            print("\n✅ All data processing complete!")
-            print(f"   - Raw data: {len(self.df_raw)} rows")
-            print(f"   - Processed data: {self.df_processed.shape}")
-            print(f"   - Models trained: {len(self.models)}")
-            print(f"   - Predictions: {len(self.predictions)} days")
-            
-            # Final summary
-            elapsed = (datetime.now() - start_time).total_seconds()
-            print_section("✅ PIPELINE COMPLETED SUCCESSFULLY! ✨")
-            print(f"\n⏱️  Total execution time: {elapsed:.2f} seconds")
-            print("\n🚀 Launch dashboard with: streamlit run dashboard.py")
-            
-            return True
-            
+            self.run_training(run_cv=run_cv)
+            self.run_prediction(days=predict_days, model_name=model_name)
+        except ValueError as e:
+            logger.error(f"❌ {e}")
+            return False
         except Exception as e:
-            logger.error(f"Pipeline failed: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.exception(f"Pipeline failed: {e}")
             return False
 
+        print_section("✅ PIPELINE COMPLETED SUCCESSFULLY")
+        print(f"⏱️  Total time: {(datetime.now() - started).total_seconds():.1f}s")
+        print("🚀 Launch dashboard with: streamlit run dashboard.py")
+        return True
 
-# ============================================================================
-# COMMAND LINE INTERFACE
-# ============================================================================
 
 def main():
     parser = argparse.ArgumentParser(
@@ -285,68 +121,25 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run full pipeline (automatic)
-  python main.py
-  
-  # Run with specific symbol
-  python main.py --symbol AAPL
-  
-  # Force download fresh data
-  python main.py --force-download
-  
-  # Predict more days
-  python main.py --days 60
+  python main.py                              # default symbol, config date range
+  python main.py --symbol MSFT --days 60
+  python main.py --symbol RELIANCE.NS --start-date 2019-01-01
+  python main.py --synthetic                  # offline demo data
+  python main.py --model ridge --no-cv        # force a model, skip cross-validation
         """
     )
-    
-    parser.add_argument(
-        '--symbol',
-        type=str,
-        default=STOCK_SYMBOL,
-        help=f'Stock ticker symbol (default: {STOCK_SYMBOL})'
-    )
-    
-    parser.add_argument(
-        '--force-download',
-        action='store_true',
-        help='Force download fresh data'
-    )
-    
-    parser.add_argument(
-        '--days',
-        type=int,
-        default=30,
-        help='Number of days to predict (default: 30)'
-    )
-    
-    parser.add_argument(
-        '--start-date',
-        type=str,
-        default=START_DATE,
-        help=f'Start date (default: {START_DATE})'
-    )
-    
-    parser.add_argument(
-        '--end-date',
-        type=str,
-        default=END_DATE,
-        help=f'End date (default: {END_DATE})'
-    )
-    
+    parser.add_argument('--symbol', type=str, default=STOCK_SYMBOL)
+    parser.add_argument('--days', type=int, default=30, help='Business days to forecast')
+    parser.add_argument('--start-date', type=str, default=START_DATE)
+    parser.add_argument('--end-date', type=str, default=END_DATE)
+    parser.add_argument('--synthetic', action='store_true', help='Use synthetic data (offline)')
+    parser.add_argument('--model', type=str, default=None, help='Model for forecasting (default: best)')
+    parser.add_argument('--no-cv', action='store_true', help='Skip time-series cross-validation')
     args = parser.parse_args()
-    
-    # Initialize pipeline
-    pipeline = AutomatedStockPipeline(
-        symbol=args.symbol,
-        start_date=args.start_date,
-        end_date=args.end_date
-    )
-    
-    # Run full pipeline
-    pipeline.run_full_pipeline(
-        force_download=args.force_download,
-        predict_days=args.days
-    )
+
+    pipeline = AutomatedStockPipeline(args.symbol, args.start_date, args.end_date, args.synthetic)
+    ok = pipeline.run_full_pipeline(predict_days=args.days, model_name=args.model, run_cv=not args.no_cv)
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":

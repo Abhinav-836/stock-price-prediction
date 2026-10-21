@@ -30,7 +30,9 @@ for directory in [DATA_RAW_DIR, DATA_PROCESSED_DIR, MODELS_DIR,
 STOCK_SYMBOL = 'AAPL'  # Default symbol
 START_DATE = '2010-01-01'
 END_DATE = datetime.now().strftime('%Y-%m-%d')
-DAYS = 365  # Days of data to generate if needed
+# FIX: 365 calendar days (~250 trading days) is not enough - the SMA_200 / Ichimoku
+# warm-up alone consumes ~200 rows, leaving almost nothing to train on.
+DAYS = 1095  # Days of synthetic data to generate if needed
 
 # ============================================================================
 # DATA CONFIGURATION
@@ -235,14 +237,4 @@ def get_feature_config():
     }
 
 if __name__ == "__main__":
-    print("="*60)
-    print("CONFIGURATION SUMMARY")
-    print("="*60)
-    print(f"Stock Symbol: {STOCK_SYMBOL}")
-    print(f"Data Range: {START_DATE} to {END_DATE}")
-    print(f"Test Size: {TEST_SIZE}")
-    print(f"Features: {len(FEATURE_COLS)} base + engineered")
-    print(f"Models: XGBoost, LightGBM, Random Forest, LSTM")
-    print(f"Ensemble: {ENSEMBLE_PARAMS['use_voting'] and ENSEMBLE_PARAMS['use_stacking']}")
-    print(f"Optimization: {OPTIMIZE_MODELS} ({OPTIMIZATION_TRIALS} trials)")
     print("="*60)

@@ -1,39 +1,16 @@
 """
-Test Suite for Stock Price Prediction Project
+Test Suite for Stock Price Prediction Project - FIXED
 
-This package contains all unit tests for the project.
+Fix: this file used to import every test class at package import time. When any test module
+failed to import (they all did), the whole `tests` package became unimportable, so even
+`python -m unittest tests.test_preprocess` crashed. unittest discovery finds tests by itself.
 
-Test Modules:
-- test_preprocess.py: Tests for data preprocessing functions
-- test_models.py: Tests for model training and evaluation
-- run_tests.py: Main test runner
-
-Usage:
-    # Run all tests
-    python tests/run_tests.py
-    
-    # Run specific test module
-    python -m unittest tests.test_preprocess
-    python -m unittest tests.test_models
-    
-    # Run specific test class
-    python -m unittest tests.test_preprocess.TestPreprocessing
-    
-    # Run specific test method
-    python -m unittest tests.test_preprocess.TestPreprocessing.test_create_date_features
+Usage (from the project root):
+    python tests/run_tests.py                       # all tests
+    python tests/run_tests.py --coverage            # with coverage (pip install coverage)
+    python tests/run_tests.py --class TestForecasting
+    python -m unittest tests.test_preprocess -v
+    python -m unittest tests.test_model.TestForecasting.test_band_widens_with_horizon
 """
 
-__version__ = '1.0.0'
-__author__ = 'Your Name'
-
-# Import test classes for easier access
-from .test_preprocess import TestPreprocessing, TestDataIntegrity
-from .test_model import TestModelTraining, TestModelEvaluation, TestFeaturePreparation
-
-__all__ = [
-    'TestPreprocessing',
-    'TestDataIntegrity', 
-    'TestModelTraining',
-    'TestModelEvaluation',
-    'TestFeaturePreparation'
-]
+__version__ = '1.1.0'

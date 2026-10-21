@@ -1,293 +1,110 @@
 # ============================================================
-# STOCK PREDICTION PROJECT - COMPLETE .gitignore
+# STOCK PREDICTION PROJECT - .gitignore (FIXED)
+# Fixes: `data/` + `!data/.gitkeep` cannot work (git never re-includes a file inside an
+# ignored directory) -> use `dir/*`. Removed `requirements.txt`/`pyproject.toml` ignores,
+# the `!streamlit/secrets.toml` line (would un-ignore a secrets file), the `.gitattributes`
+# ignore, and the *.ipynb ignore. Added cache/, dashboard_data/, reports/.
 # ============================================================
 
-# ============================================================
-# DATA FILES
-# ============================================================
-data/
+# ---------- Generated data / models / outputs ----------
+data/*
 !data/.gitkeep
-data/raw/*.csv
-data/raw/*.parquet
-data/raw/*.feather
-data/processed/*.csv
-data/processed/*.parquet
-data/processed/*.feather
-data/cache/
-data/temp/
-
-# ============================================================
-# MODELS
-# ============================================================
-models/
+cache/
+dashboard_data/
+models/*
 !models/.gitkeep
-models/*.pkl
-models/*.h5
-models/*.pb
-models/*.onnx
-models/*.joblib
-models/*.pth
-models/*.pt
-models/*_metadata.json
-models/*_metrics.json
-models/best_model/
-
-# ============================================================
-# OUTPUTS & REPORTS
-# ============================================================
-outputs/
+!models/README.md
+outputs/*
 !outputs/.gitkeep
-outputs/predictions/*.csv
-outputs/predictions/*.txt
-outputs/figures/*.png
-outputs/figures/*.jpg
-outputs/figures/*.pdf
-outputs/figures/*.html
-outputs/reports/
-outputs/*.log
-
-# ============================================================
-# LOGS
-# ============================================================
-logs/
+logs/*
 !logs/.gitkeep
-logs/*.log
-logs/*.txt
+reports/
 *.log
 
-# ============================================================
-# PYTHON CACHE
-# ============================================================
+# ---------- Python ----------
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-*.pyc
-*.pyo
-*.pyd
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
 
-# ============================================================
-# VIRTUAL ENVIRONMENTS
-# ============================================================
+# ---------- Virtual environments ----------
 venv/
+.venv/
 env/
 ENV/
-env.bak/
-venv.bak/
-pythonenv*
-.venv
 virtualenv/
-pyenv/
 
-# ============================================================
-# DEPENDENCIES
-# ============================================================
-requirements.txt
-!requirements.txt
-Pipfile
-Pipfile.lock
-poetry.lock
-pyproject.toml
-!pyproject.toml
-
-# ============================================================
-# JUPYTER NOTEBOOKS
-# ============================================================
+# ---------- Jupyter ----------
 .ipynb_checkpoints/
-*.ipynb_checkpoints
-*.ipynb
-!01_exploration.ipynb
-!02_feature_analysis.ipynb
-!03_experiments.ipynb
-!dashboard.ipynb
-jupyter_notebook_config.py
 
-# ============================================================
-# IDE & EDITOR FILES
-# ============================================================
+# ---------- IDE / OS ----------
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 .DS_Store
-*.sublime-project
-*.sublime-workspace
-.vscode/settings.json
-.vscode/launch.json
-.vscode/extensions.json
-.idea/workspace.xml
-.idea/encodings.xml
+Thumbs.db
+Desktop.ini
+._*
 
-# ============================================================
-# GIT
-# ============================================================
-*.orig
-*.rej
-*.patch
-.gitattributes
-!*.gitattributes
-
-# ============================================================
-# ENVIRONMENT VARIABLES
-# ============================================================
+# ---------- Secrets (never commit) ----------
 .env
-.env.local
-.env.*.local
-.env.production
-.env.development
-config.ini
+.env.*
+*.env
+.streamlit/secrets.toml
 credentials.json
 secrets.json
-*.env
-
-# ============================================================
-# STREAMLIT
-# ============================================================
-.streamlit/secrets.toml
-!streamlit/secrets.toml
-.streamlit/cache/
-
-# ============================================================
-# PLOTLY
-# ============================================================
-.plotly/
-.plotly_cache/
-
-# ============================================================
-# DATABASE
-# ============================================================
-*.db
-*.sqlite
-*.sqlite3
-*.duckdb
-
-# ============================================================
-# OS SPECIFIC
-# ============================================================
-# Windows
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-$RECYCLE.BIN/
-
-# Mac
-.DS_Store
-.AppleDouble
-.LSOverride
-._*
-.Spotlight-V100
-.Trashes
-.AppleDB
-.AppleDesktop
-Network Trash Folder
-Temporary Items
-
-# Linux
-*~
-.directory
-.dmrc
-.gnupg/
-.thumbnails/
-
-# ============================================================
-# TESTING & COVERAGE
-# ============================================================
-.coverage
-coverage/
-coverage.xml
-.coverage.*
-htmlcov/
-.pytest_cache/
-.pytest_cache/
-.tox/
-*.cover
-coverage.lcov
-reports/
-tests/coverage/
-junit.xml
-
-# ============================================================
-# BUILD & PACKAGE
-# ============================================================
-build/
-dist/
-*.egg-info/
-*.egg
-MANIFEST
-*.whl
-*.tar.gz
-*.zip
-
-# ============================================================
-# MISCELLANEOUS
-# ============================================================
-*.tmp
-*.temp
-.cache/
-.cache/
-*.cache
-*.backup
-*.bak
-*.old
-*.dump
-*.dmp
-*.corrupted
-
-# ============================================================
-# API KEYS & SECRETS (Make sure to never commit these!)
-# ============================================================
-*.key
-*.pem
-*.crt
-*.p12
-*.pfx
+config.ini
 api_keys.txt
 secrets.txt
+*.key
+*.pem
+*.p12
+*.pfx
 *.secret
 
-# ============================================================
-# LARGE FILES (>100MB)
-# ============================================================
+# ---------- Testing / coverage ----------
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.tox/
+
+# ---------- Large / binary model artifacts ----------
+*.pkl
+*.joblib
 *.h5
+*.keras
 *.pb
 *.onnx
-*.pth
 *.pt
+*.pth
 *.ckpt
 *.safetensors
-*.bin
+
+# ---------- Archives / temp / backups ----------
+*.zip
 *.tar
+*.tar.gz
 *.gz
 *.7z
 *.rar
-*.zip
-
-# ============================================================
-# DOCUMENTATION BUILD
-# ============================================================
-docs/_build/
-docs/build/
-site/
-_book/
-
-# ============================================================
-# BACKUP FILES
-# ============================================================
+*.tmp
+*.temp
 *.bak
+*.bak_*
 *.backup
 *.old
-*.orig
-*.rej
-*.patch
-*_backup.*
-
-# ============================================================
-# TEMPORARY DATA DOWNLOADS
-# ============================================================
 downloads/
 tmp/
 temp/
-*.downloading
-*.partial
+.cache/
+.plotly/
