@@ -4,6 +4,8 @@ Download a stock's history from Yahoo Finance, build ~340 technical features, tr
 
 The project is honest about what's possible: it predicts **next-day returns**, compares every model against a "no change" baseline, and shows when a model isn't beating it.
 
+**Live:** [stocks-price-predictions.streamlit.app](https://stocks-price-predictions.streamlit.app)
+
 ## How it works
 
 ```
